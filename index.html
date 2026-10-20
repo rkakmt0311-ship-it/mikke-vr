@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>ミッケ！の せかいへ</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<!-- スタート画面 -->
+<div id="start">
+  <div class="book">
+    <h1>ミッケ！の せかいへ</h1>
+    <p class="lead">えほんの なかに はいって、かくれた ものを さがそう。</p>
+    <div class="modes">
+      <button id="btn-xr" class="primary" hidden>VRゴーグルで あそぶ（Quest）</button>
+      <button id="btn-pc">PCで あそぶ（マウス＋キーボード）</button>
+      <button id="btn-phonevr">スマホVR（ゴーグルに いれる）</button>
+      <button id="btn-phone">スマホ てもち</button>
+    </div>
+    <label class="quality">がしつ
+      <select id="quality"><option value="ultra">超高（PC）</option><option value="high">高</option><option value="quest">Quest</option><option value="mid">中</option><option value="low">低</option></select>
+    </label>
+    <p id="xr-note" class="note"></p>
+    <details class="howto"><summary>そうさ ほうほう</summary>
+      <table>
+        <tr><th></th><th>PC</th><th>Quest</th><th>スマホVR</th></tr>
+        <tr><td>うごく</td><td>WASD</td><td>左スティック</td><td>足もとの「すすむ」</td></tr>
+        <tr><td>うえ／した</td><td>Space／Shift</td><td>右スティック 上下</td><td>上・下を むいて すすむ</td></tr>
+        <tr><td>みつけた！</td><td>左クリック</td><td>右トリガー</td><td>1.5びょう みつめる</td></tr>
+        <tr><td>ギミック</td><td>右クリック／E</td><td>左トリガー</td><td>みつめる</td></tr>
+        <tr><td>ヒント</td><td>H</td><td>Aボタン</td><td>足もとの「ヒント」</td></tr>
+        <tr><td>ルーペ</td><td>L</td><td>グリップ</td><td>足もとの「ルーペ」</td></tr>
+        <tr><td>リスト</td><td>Tab</td><td>左手首を みる／Xボタン</td><td>足もとの「リスト」</td></tr>
+        <tr><td>メニュー</td><td>Esc</td><td>Yボタン</td><td>足もとの「メニュー」</td></tr>
+      </table>
+    </details>
+  </div>
+</div>
+
+<!-- PC・スマホ手持ちのHUD -->
+<div id="hud" hidden>
+  <div id="list"></div>
+  <div id="crosshair"></div>
+  <div id="toast"></div>
+  <div id="lens" hidden></div>
+  <div id="lockmsg">クリックで はじめる</div>
+  <div id="phonebtns" hidden>
+    <button data-act="list">📜</button><button data-act="lens">🔍</button><button data-act="hint">💡</button><button data-act="menu">≡</button>
+  </div>
+</div>
+
+<!-- スマホ手持ちの操作 -->
+<div id="touch" hidden>
+  <div id="joy"><div id="knob"></div></div>
+  <div id="updown"><button id="btn-up">▲</button><button id="btn-down">▼</button></div>
+</div>
+
+<!-- メニュー（PC・スマホ手持ち） -->
+<div id="menu" hidden>
+  <div class="book small">
+    <h2>メニュー</h2>
+    <div id="menu-pages"></div>
+    <button data-menu="resume" class="primary">つづける</button>
+    <button data-menu="hub">えほんの へやへ もどる</button>
+    <label class="quality">がしつ <select id="quality2"><option value="ultra">超高（PC）</option><option value="high">高</option><option value="quest">Quest</option><option value="mid">中</option><option value="low">低</option></select></label>
+    <button data-menu="quit">はじめの がめんへ</button>
+  </div>
+</div>
+
+<div id="loading">よみこみちゅう…</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

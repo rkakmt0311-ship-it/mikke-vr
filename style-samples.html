@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>見た目テイスト比較</title>
+<style>
+  :root{--bg:#111;--panel:rgba(18,18,26,.84);--fg:#f4f4f4;--accent:#ffcf5a;--btn:#2a2a38;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+    font-family:system-ui,"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;overflow:hidden}
+  canvas{display:block}
+  #ui{position:fixed;top:12px;left:12px;right:12px;display:flex;flex-wrap:wrap;gap:8px;z-index:2}
+  #ui button{background:var(--btn);color:var(--fg);border:1px solid #444;border-radius:999px;
+    padding:8px 14px;font-size:14px;cursor:pointer}
+  #ui button.on{background:var(--accent);color:#222;border-color:var(--accent);font-weight:700}
+  #info{position:fixed;left:12px;bottom:12px;max-width:min(470px,calc(100% - 24px));background:var(--panel);
+    padding:12px 14px;border-radius:12px;font-size:14px;line-height:1.65;z-index:2}
+  #info h2{margin:0 0 4px;font-size:16px;color:var(--accent)}
+  #info .find{margin-top:6px;padding:6px 10px;background:rgba(255,255,255,.08);border-radius:8px}
+  #info .stats{opacity:.65;font-size:12px;margin-top:6px}
+  #info button{margin-top:8px;background:transparent;color:var(--fg);border:1px solid #666;border-radius:8px;padding:4px 10px;cursor:pointer}
+  #toast{position:fixed;top:45%;left:50%;transform:translate(-50%,-50%) scale(.6);opacity:0;
+    font-size:56px;font-weight:900;color:#fff;text-shadow:0 4px 18px #f80,0 0 4px #000;pointer-events:none;
+    transition:all .35s cubic-bezier(.2,1.6,.4,1);z-index:3}
+  #toast.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+</style>
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="ui">
+  <button data-mode="pastel">A ローポリ＆パステル</button>
+  <button data-mode="real">B リアル寄り</button>
+  <button data-mode="sea">C-1 海（ステージ別テイスト）</button>
+  <button data-mode="mansion">C-2 洋館（ステージ別テイスト）</button>
+</div>
+<div id="info"></div>
+<div id="toast">ミッケ！</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+// ---------- 基本セットアップ ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.05, 200);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+const envTex = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+
+// A と B で同じ配置になるよう、シード付き乱数を使う
+let seed = 1;
+function rand() { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }
+const rnd = (a, b) => a + rand() * (b - a);
+const pick = arr => arr[Math.floor(rand() * arr.length)];
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+
+// 山盛りの中の位置（ミッケ！の「ごちゃごちゃ山」）
+function moundPos(c, R, H) {
+  const r = R * Math.sqrt(rand()), a = rand() * Math.PI * 2;
+  const top = H * (1 - (r / R) ** 2);
+  return V(c.x + Math.cos(a) * r, c.y + rand() * top, c.z + Math.sin(a) * r);
+}
+function moundTop(R, H, dx, dz) { return H * (1 - (Math.hypot(dx, dz) / R) ** 2); }
+
+// InstancedMesh で大量配置
+function scatter(geo, mat, count, posFn, colors, { scale = () => 1, rot = () => V(rnd(0, 6.3), rnd(0, 6.3), rnd(0, 6.3)) } = {}) {
+  const m = new THREE.InstancedMesh(geo, mat, count);
+  const d = new THREE.Object3D(), c = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    d.position.copy(posFn(i)); const r = rot(i); d.rotation.set(r.x, r.y, r.z);
+    const s = scale(i); typeof s === 'number' ? d.scale.setScalar(s) : d.scale.copy(s);
+    d.updateMatrix(); m.setMatrixAt(i, d.matrix);
+    if (colors) m.setColorAt(i, c.set(pick(colors)));
+  }
+  m.castShadow = m.receiveShadow = true;
+  return m;
+}
+function mesh(geo, mat, pos, parent) {
+  const m = new THREE.Mesh(geo, mat); m.position.copy(pos);
+  m.castShadow = m.receiveShadow = true; if (parent) parent.add(m); return m;
+}
+function setShadow(light, size, res = 2048) {
+  light.castShadow = true; const c = light.shadow.camera;
+  c.left = c.bottom = -size; c.right = c.top = size; c.near = 0.5; c.far = 40;
+  light.shadow.mapSize.set(res, res); light.shadow.bias = -0.0005; light.shadow.normalBias = 0.02;
+}
+function canvasTex(w, h, draw, repeat = 1) {
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h; draw(cv.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repeat, repeat); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+function woodTex(hue, light, repeat) {
+  return canvasTex(512, 512, (g) => {
+    for (let i = 0; i < 8; i++) {
+      g.fillStyle = `hsl(${hue},${40 + rnd(-6, 6)}%,${light + rnd(-5, 5)}%)`; g.fillRect(0, i * 64, 512, 64);
+      for (let k = 0; k < 40; k++) {
+        g.strokeStyle = `rgba(30,15,5,${rnd(.05, .2)})`; g.beginPath(); const y = i * 64 + rnd(0, 64);
+        g.moveTo(0, y); g.bezierCurveTo(170, y + rnd(-6, 6), 340, y + rnd(-6, 6), 512, y + rnd(-4, 4)); g.stroke();
+      }
+      g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(0, i * 64, 512, 2);
+    }
+  }, repeat);
+}
+function room(scene, M, { floor, back, side, size = 14, h = 7, ceiling }) {
+  const half = size / 2;
+  const f = mesh(new THREE.PlaneGeometry(size, size), floor, V(0, 0, 0), scene); f.rotation.x = -Math.PI / 2;
+  const b = mesh(new THREE.PlaneGeometry(size, h), back, V(0, h / 2, -half), scene);
+  const l = mesh(new THREE.PlaneGeometry(size, h), side, V(-half, h / 2, 0), scene); l.rotation.y = Math.PI / 2;
+  const r = mesh(new THREE.PlaneGeometry(size, h), side, V(half, h / 2, 0), scene); r.rotation.y = -Math.PI / 2;
+  if (ceiling) { const c = mesh(new THREE.PlaneGeometry(size, size), ceiling, V(0, h, 0), scene); c.rotation.x = Math.PI / 2; }
+  [f, b, l, r].forEach(m => m.castShadow = false);
+}
+
+// ---------- ステージ：おもちゃ部屋（A / B 共通、質感だけ変える） ----------
+function buildToyRoom(style) {
+  seed = 42;
+  const P = style === 'pastel';
+  const scene = new THREE.Scene();
+  const palette = P ? ['#ffb3c1', '#ffd6a5', '#fdffb6', '#caffbf', '#9bf6ff', '#a0c4ff', '#bdb2ff']
+                    : ['#c1121f', '#f77f00', '#fcbf49', '#2a9d8f', '#1d4ed8', '#6a4c93', '#e9e9e9', '#222'];
+  const M = (color, o = {}) => P ? new THREE.MeshLambertMaterial({ color, flatShading: true })
+                                 : new THREE.MeshStandardMaterial({ color, roughness: o.r ?? 0.5, metalness: o.m ?? 0, map: o.map ?? null });
+  const sphereG = (r) => P ? new THREE.IcosahedronGeometry(r, 1) : new THREE.SphereGeometry(r, 32, 20);
+  const cylG = (rt, rb, h) => new THREE.CylinderGeometry(rt, rb, h, P ? 8 : 32);
+
+  if (P) {
+    renderer.toneMapping = THREE.NoToneMapping;
+    scene.background = new THREE.Color('#fdeef4');
+    scene.add(new THREE.HemisphereLight('#ffffff', '#ffd6e8', 1.7));
+    const d = new THREE.DirectionalLight('#fff6e0', 1.6); d.position.set(4, 9, 5); setShadow(d, 8, 1024); scene.add(d);
+  } else {
+    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+    scene.background = new THREE.Color('#1c1712');
+    scene.environment = envTex; scene.environmentIntensity = 0.35;
+    const d = new THREE.DirectionalLight('#ffe2b8', 3.4); d.position.set(-6, 7, 3); setShadow(d, 8); scene.add(d);
+    scene.add(new THREE.AmbientLight('#ffffff', 0.2));
+  }
+
+  room(scene, M, {
+    floor: P ? M('#f6e3c8') : M('#ffffff', { map: woodTex(30, 34, 3), r: 0.45 }),
+    back: P ? M('#cdeafe') : M('#b9a88c', { r: 0.9 }),
+    side: P ? M('#ffe9c7') : M('#a89a80', { r: 0.9 }),
+  });
+  if (!P) { // 窓（光源の見た目）
+    const w = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.4), new THREE.MeshBasicMaterial({ color: '#fff3d6' }));
+    w.position.set(-6.98, 3.6, 0); w.rotation.y = Math.PI / 2; scene.add(w);
+  }
+
+  // おもちゃ箱
+  const box = new THREE.Group(); box.position.set(2.8, 0, -2.2); scene.add(box);
+  const boxM = P ? M('#ffc8dd') : M('#9d1b1f', { r: 0.35 });
+  mesh(new THREE.BoxGeometry(2.2, 0.1, 1.6), boxM, V(0, 0.05, 0), box);
+  mesh(new THREE.BoxGeometry(2.2, 1.2, 0.1), boxM, V(0, 0.6, 0.75), box);
+  mesh(new THREE.BoxGeometry(2.2, 1.2, 0.1), boxM, V(0, 0.6, -0.75), box);
+  mesh(new THREE.BoxGeometry(0.1, 1.2, 1.6), boxM, V(1.05, 0.6, 0), box);
+  mesh(new THREE.BoxGeometry(0.1, 1.2, 1.6), boxM, V(-1.05, 0.6, 0), box);
+  const lid = mesh(new THREE.BoxGeometry(2.2, 0.1, 1.6), boxM, V(0, 1.6, -1.15), box); lid.rotation.x = -1.2;
+  const white = P ? new THREE.MeshLambertMaterial({ color: '#fff', flatShading: true }) : new THREE.MeshStandardMaterial({ color: '#fff', roughness: 0.45 });
+  box.add(scatter(new THREE.BoxGeometry(0.25, 0.25, 0.25), white, 90, () => moundPos(V(0, 0.1, 0), 0.95, 1.4), palette));
+
+  // ビー玉の山（ここに隠しアイテム）
+  const pileC = V(-1.5, 0, 0.8), R = 2.0, H = 1.1;
+  const marbleM = P ? new THREE.MeshLambertMaterial({ color: '#fff', flatShading: true })
+                    : new THREE.MeshPhysicalMaterial({ color: '#fff', roughness: 0.06, clearcoat: 1, clearcoatRoughness: 0.03 });
+  scene.add(scatter(sphereG(0.09), marbleM, 650, () => moundPos(pileC, R, H), palette));
+
+  // 隠しアイテム：サイコロ
+  const die = new THREE.Group();
+  const dieBody = mesh(P ? new THREE.BoxGeometry(0.22, 0.22, 0.22) : roundedBox(0.22), M('#f4f4f4', { r: 0.3 }), V(0, 0, 0), die);
+  const pipM = M('#d00000');
+  const pips = [[0, 0.111, 0], [0.111, 0.05, 0.05], [0.111, -0.05, -0.05], [0, 0, 0.111], [0.05, 0.05, 0.111], [-0.05, -0.05, 0.111]];
+  pips.forEach(p => mesh(new THREE.SphereGeometry(0.022, 8, 6), pipM, V(...p), die));
+  const dx = 0.8, dz = 0.45;
+  die.position.set(pileC.x + dx, moundTop(R, H, dx, dz) * 0.9, pileC.z + dz);
+  die.rotation.set(0.5, 0.7, 0.2); scene.add(die);
+
+  // 床に散らばる積み木
+  scene.add(scatter(new THREE.BoxGeometry(0.32, 0.32, 0.32), white, 110,
+    () => { let p; do { p = V(rnd(-6.3, 6.3), 0.16, rnd(-6.3, 5.5)); } while (p.distanceTo(V(pileC.x, 0.16, pileC.z)) < 2.3); return p; },
+    palette, { rot: () => V(0, rnd(0, 6.3), 0) }));
+
+  // くまのぬいぐるみ
+  const bearM = P ? M('#e7b98a') : new THREE.MeshStandardMaterial({ color: '#8b5a2b', roughness: 1 });
+  const bear = new THREE.Group(); bear.position.set(4.6, 0, 1.4); bear.rotation.y = -0.8; scene.add(bear);
+  mesh(sphereG(0.55), bearM, V(0, 0.6, 0), bear).scale.set(1, 1.1, 0.9);
+  mesh(sphereG(0.42), bearM, V(0, 1.45, 0.05), bear);
+  mesh(sphereG(0.15), bearM, V(-0.3, 1.8, 0), bear); mesh(sphereG(0.15), bearM, V(0.3, 1.8, 0), bear);
+  mesh(sphereG(0.18), bearM, V(-0.55, 0.75, 0.15), bear); mesh(sphereG(0.18), bearM, V(0.55, 0.75, 0.15), bear);
+  mesh(sphereG(0.22), bearM, V(-0.3, 0.2, 0.4), bear); mesh(sphereG(0.22), bearM, V(0.3, 0.2, 0.4), bear);
+  mesh(sphereG(0.15), M(P ? '#fff0dc' : '#d7b48c', { r: 1 }), V(0, 1.38, 0.4), bear);
+  mesh(sphereG(0.05), M('#222', { r: 0.2 }), V(-0.14, 1.55, 0.38), bear); mesh(sphereG(0.05), M('#222', { r: 0.2 }), V(0.14, 1.55, 0.38), bear);
+
+  // ロボット
+  const robot = new THREE.Group(); robot.position.set(-4.6, 0, -3.5); robot.rotation.y = 0.5; scene.add(robot);
+  const metal = P ? M('#bde0fe') : M('#9aa4ad', { r: 0.3, m: 0.9 });
+  mesh(new THREE.BoxGeometry(0.9, 1.1, 0.6), metal, V(0, 1.1, 0), robot);
+  mesh(new THREE.BoxGeometry(0.7, 0.55, 0.55), metal, V(0, 1.95, 0), robot);
+  mesh(new THREE.BoxGeometry(0.25, 0.55, 0.25), metal, V(-0.25, 0.28, 0), robot);
+  mesh(new THREE.BoxGeometry(0.25, 0.55, 0.25), metal, V(0.25, 0.28, 0), robot);
+  mesh(cylG(0.03, 0.03, 0.4), metal, V(0, 2.4, 0), robot);
+  mesh(sphereG(0.07), M('#ff3b3b'), V(0, 2.62, 0), robot);
+  mesh(sphereG(0.08), M(P ? '#5e60ce' : '#00e5ff'), V(-0.15, 2, 0.28), robot);
+  mesh(sphereG(0.08), M(P ? '#5e60ce' : '#00e5ff'), V(0.15, 2, 0.28), robot);
+
+  // ミニカー
+  for (let i = 0; i < 7; i++) {
+    const car = new THREE.Group(); car.position.set(rnd(-1, 6), 0, rnd(2.5, 6)); car.rotation.y = rnd(0, 6.3); scene.add(car);
+    const cm = M(pick(palette), { r: 0.2, m: 0.3 });
+    mesh(new THREE.BoxGeometry(0.7, 0.18, 0.34), cm, V(0, 0.16, 0), car);
+    mesh(new THREE.BoxGeometry(0.36, 0.16, 0.3), cm, V(-0.05, 0.32, 0), car);
+    const wg = cylG(0.08, 0.08, 0.06); wg.rotateX(Math.PI / 2);
+    [[-0.22, 0.17], [0.22, 0.17], [-0.22, -0.17], [0.22, -0.17]].forEach(([x, z]) => mesh(wg, M('#222', { r: 0.8 }), V(x, 0.08, z), car));
+  }
+
+  // 大きなボール
+  for (let i = 0; i < 3; i++) mesh(sphereG(0.45), M(pick(palette), { r: 0.25 }), V(rnd(-6, -3.5), 0.45, rnd(1, 5)), scene);
+
+  // 壁の棚（上のほうにもおもちゃ＝飛んで探す場所）
+  const shelfM = P ? M('#ffffff') : M('#6b4a2b', { r: 0.6 });
+  [2, 3.3, 4.6].forEach(y => {
+    mesh(new THREE.BoxGeometry(5, 0.1, 0.7), shelfM, V(-1.5, y, -6.6), scene);
+    scene.add(scatter(sphereG(0.12), white, 25, () => V(rnd(-3.8, 0.8), y + 0.12, rnd(-6.9, -6.3)), palette));
+    scene.add(scatter(new THREE.BoxGeometry(0.22, 0.22, 0.22), white, 18, () => V(rnd(-3.8, 0.8), y + 0.16, rnd(-6.9, -6.3)), palette, { rot: () => V(0, rnd(0, 6.3), 0) }));
+  });
+
+  return {
+    scene, hidden: die, cam: [V(0, 3.4, 7.6), V(-0.8, 0.8, 0)],
+    title: P ? 'A：ローポリ＆パステル' : 'B：リアル寄り（写真絵本っぽさ）',
+    desc: P ? '角ばった形、やさしい色、くっきりした影。動作がとても軽いので、Quest単体でも数千個のアイテムを置けます。'
+            : '同じ部屋を、ツヤ・反射・木目・柔らかい影で表現しました。ミニチュアの写真のような雰囲気が出ますが、Aよりは重くなります。',
+    find: 'ビー玉の山のどこかに「赤い目のサイコロ」があります',
+    update() {},
+  };
+}
+function roundedBox(s) { // 角の丸い箱（リアル用）
+  const g = new THREE.BoxGeometry(s, s, s, 6, 6, 6), p = g.attributes.position, v = new THREE.Vector3(), r = s * 0.15, h = s / 2 - r;
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const c = V(THREE.MathUtils.clamp(v.x, -h, h), THREE.MathUtils.clamp(v.y, -h, h), THREE.MathUtils.clamp(v.z, -h, h));
+    v.sub(c).normalize().multiplyScalar(r).add(c); p.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.computeVertexNormals(); return g;
+}
+
+// ---------- ステージ：海の中（C-1） ----------
+function buildSea() {
+  seed = 7;
+  const scene = new THREE.Scene();
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
+  scene.background = new THREE.Color('#06324a');
+  scene.fog = new THREE.FogExp2('#0a4766', 0.075);
+  scene.add(new THREE.HemisphereLight('#7fd8ff', '#0b2a3a', 2.2));
+  const sun = new THREE.DirectionalLight('#c6f6ff', 2.6); sun.position.set(2, 12, 3); setShadow(sun, 9); scene.add(sun);
+
+  const sandH = (x, z) => Math.sin(x * 0.5) * 0.15 + Math.cos(z * 0.4) * 0.15 + Math.sin((x + z) * 1.3) * 0.04;
+  const sandG = new THREE.PlaneGeometry(40, 40, 120, 120); sandG.rotateX(-Math.PI / 2);
+  const sp = sandG.attributes.position;
+  for (let i = 0; i < sp.count; i++) sp.setY(i, sandH(sp.getX(i), sp.getZ(i)));
+  sandG.computeVertexNormals();
+  const sand = mesh(sandG, new THREE.MeshStandardMaterial({ color: '#d9c49a', roughness: 1 }), V(0, 0, 0), scene); sand.castShadow = false;
+
+  // 揺らめく光（コースティクス）
+  const caustTex = canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#000'; g.fillRect(0, 0, w, h); g.filter = 'blur(1.5px)';
+    for (let i = 0; i < 70; i++) {
+      g.strokeStyle = `rgba(255,255,255,${rnd(.3, .8)})`; g.lineWidth = rnd(1.5, 3.5);
+      g.beginPath(); g.ellipse(rnd(0, w), rnd(0, h), rnd(10, 30), rnd(8, 24), rnd(0, 3), 0, rnd(2, 5)); g.stroke();
+    }
+  }, 8);
+  const caust = new THREE.Mesh(sandG.clone(), new THREE.MeshBasicMaterial({ map: caustTex, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false }));
+  caust.position.y = 0.02; scene.add(caust);
+
+  // 光の筋
+  const rayM = new THREE.MeshBasicMaterial({ color: '#bff4ff', transparent: true, opacity: 0.05, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  for (let i = 0; i < 6; i++) { const r = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 1.8, 16, 20, 1, true), rayM); r.position.set(rnd(-6, 6), 8, rnd(-7, 2)); r.rotation.z = rnd(-0.2, 0.2); scene.add(r); }
+
+  // サンゴ
+  const coralCols = ['#ff6f91', '#ff9671', '#ffc75f', '#e8505b', '#c77dff'];
+  function branch(group, mat, pos, dir, len, rad, depth) {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(rad * 0.7, rad, len, 7), mat);
+    m.quaternion.setFromUnitVectors(V(0, 1, 0), dir); m.position.copy(pos).addScaledVector(dir, len / 2);
+    m.castShadow = true; group.add(m);
+    const end = pos.clone().addScaledVector(dir, len);
+    if (depth > 0) { const n = 2 + Math.floor(rand() * 2);
+      for (let i = 0; i < n; i++) branch(group, mat, end, dir.clone().add(V(rnd(-.8, .8), rnd(.1, .6), rnd(-.8, .8))).normalize(), len * 0.75, rad * 0.72, depth - 1);
+    } else { const t = new THREE.Mesh(new THREE.SphereGeometry(rad * 1.15, 8, 6), mat); t.position.copy(end); group.add(t); }
+  }
+  for (let i = 0; i < 9; i++) {
+    const g = new THREE.Group(); const x = rnd(-6, 6), z = rnd(-7, 1.5);
+    if (Math.hypot(x, z) < 2.5) continue;
+    const c = new THREE.Color(pick(coralCols));
+    const mat = new THREE.MeshStandardMaterial({ color: c, roughness: 0.7, emissive: c, emissiveIntensity: 0.15 });
+    branch(g, mat, V(x, sandH(x, z), z), V(0, 1, 0), rnd(0.5, 0.9), 0.09, 3); scene.add(g);
+  }
+  // 脳サンゴ・岩
+  for (let i = 0; i < 7; i++) {
+    const g = new THREE.IcosahedronGeometry(rnd(0.4, 0.9), 3), p = g.attributes.position, v = new THREE.Vector3();
+    for (let k = 0; k < p.count; k++) { v.fromBufferAttribute(p, k); v.multiplyScalar(1 + Math.sin(v.x * 18) * Math.sin(v.y * 18) * 0.04); p.setXYZ(k, v.x, v.y * 0.7, v.z); }
+    g.computeVertexNormals();
+    const x = rnd(-7, 7), z = rnd(-8, 3); if (Math.hypot(x, z) < 2.5) continue;
+    const col = i % 2 ? '#7a8c7e' : pick(coralCols);
+    mesh(g, new THREE.MeshStandardMaterial({ color: col, roughness: 0.9 }), V(x, sandH(x, z), z), scene);
+  }
+
+  // 海藻（ゆらゆら）
+  const weeds = [];
+  const weedM = new THREE.MeshStandardMaterial({ color: '#2f9e5b', roughness: 0.8, emissive: '#0b3', emissiveIntensity: 0.08 });
+  for (let i = 0; i < 40; i++) {
+    const x = rnd(-8, 8), z = rnd(-8, 3); if (Math.hypot(x, z) < 2.4) continue;
+    const h = rnd(1, 3), pivot = new THREE.Group(); pivot.position.set(x, sandH(x, z), z);
+    const g = new THREE.CylinderGeometry(0.02, 0.06, h, 5, 6); g.translate(0, h / 2, 0);
+    mesh(g, weedM, V(0, 0, 0), pivot); scene.add(pivot); weeds.push({ pivot, ph: rnd(0, 6.3) });
+  }
+
+  // 貝殻の山（ここに隠しアイテム）
+  const pileC = V(0, sandH(0, 0) - 0.05, 0), R = 1.8, H = 0.75;
+  const shellG = new THREE.SphereGeometry(0.1, 12, 8); shellG.scale(1, 0.4, 0.8);
+  scene.add(scatter(shellG, new THREE.MeshStandardMaterial({ color: '#fff', roughness: 0.4 }), 520, () => moundPos(pileC, R, H),
+    ['#f5e6d3', '#f2c6b4', '#e8d5b0', '#ffffff', '#e0b49a', '#f7d6e0', '#d9a77a']));
+  // 小さなヒトデもカモフラージュとして混ぜる
+  const starG = (() => { const s = new THREE.Shape(); for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2, r = i % 2 ? 0.05 : 0.13; s[i ? 'lineTo' : 'moveTo'](Math.cos(a) * r, Math.sin(a) * r); }
+    const g = new THREE.ExtrudeGeometry(s, { depth: 0.03, bevelEnabled: false }); g.rotateX(-Math.PI / 2); return g; })();
+  scene.add(scatter(starG, new THREE.MeshStandardMaterial({ color: '#fff', roughness: 0.8 }), 40, () => moundPos(pileC, R, H), ['#ff8a5b', '#ffb703', '#e76f51']));
+
+  // 隠しアイテム：金の指輪
+  const ring = new THREE.Group();
+  mesh(new THREE.TorusGeometry(0.075, 0.022, 12, 32), new THREE.MeshStandardMaterial({ color: '#e8b923', metalness: 1, roughness: 0.25, envMap: envTex }), V(0, 0, 0), ring);
+  mesh(new THREE.OctahedronGeometry(0.035), new THREE.MeshStandardMaterial({ color: '#7fdcff', metalness: 0.2, roughness: 0.05, envMap: envTex }), V(0, 0.095, 0), ring);
+  const dx = -0.9, dz = 0.55; ring.position.set(dx, pileC.y + moundTop(R, H, dx, dz) * 0.92, dz); ring.rotation.set(1.1, 0.3, 0.4); scene.add(ring);
+
+  // 宝箱
+  const chest = new THREE.Group(); chest.position.set(3.6, sandH(3.6, -2.5), -2.5); chest.rotation.y = -0.6; scene.add(chest);
+  const woodM = new THREE.MeshStandardMaterial({ color: '#5b3a1e', roughness: 0.9 });
+  mesh(new THREE.BoxGeometry(1.4, 0.8, 0.9), woodM, V(0, 0.4, 0), chest);
+  const lid = mesh(new THREE.CylinderGeometry(0.45, 0.45, 1.4, 16, 1, false, 0, Math.PI), woodM, V(0, 0.8, -0.2), chest); lid.rotation.set(-0.9, 0, Math.PI / 2);
+  chest.add(scatter(new THREE.CylinderGeometry(0.07, 0.07, 0.015, 16), new THREE.MeshStandardMaterial({ color: '#f0c040', metalness: 1, roughness: 0.3, envMap: envTex }), 120,
+    () => moundPos(V(0, 0.5, 0), 0.6, 0.4)));
+
+  // 魚の群れ（泳ぐ）
+  const fishG = (() => { const b = new THREE.SphereGeometry(0.1, 10, 6); b.scale(1.8, 0.8, 0.45);
+    const t = new THREE.ConeGeometry(0.07, 0.14, 4); t.rotateZ(Math.PI / 2); t.translate(-0.24, 0, 0); return mergeGeometries([b, t]); })();
+  const schools = [{ c: V(0, 2.2, -1), R: 3.5, sp: 0.35, n: 60, cols: ['#ffd60a', '#ffc300'] },
+                   { c: V(-2, 3.5, -3), R: 2.5, sp: -0.5, n: 50, cols: ['#4cc9f0', '#4895ef'] },
+                   { c: V(3, 1.5, 0), R: 1.8, sp: 0.6, n: 30, cols: ['#ff5d8f', '#ff8fab'] }];
+  const fishMeshes = schools.map(s => {
+    const m = new THREE.InstancedMesh(fishG, new THREE.MeshStandardMaterial({ color: '#fff', roughness: 0.35, metalness: 0.2 }), s.n);
+    const c = new THREE.Color(); s.f = [];
+    for (let i = 0; i < s.n; i++) { s.f.push({ ph: rnd(0, 1.2), dr: rnd(-0.5, 0.5), dy: rnd(-0.5, 0.5) }); m.setColorAt(i, c.set(pick(s.cols))); }
+    m.castShadow = true; scene.add(m); return m;
+  });
+
+  // 泡
+  const bubN = 300, bubPos = new Float32Array(bubN * 3);
+  for (let i = 0; i < bubN; i++) { bubPos[i * 3] = rnd(-8, 8); bubPos[i * 3 + 1] = rnd(0, 9); bubPos[i * 3 + 2] = rnd(-8, 4); }
+  const bubG = new THREE.BufferGeometry(); bubG.setAttribute('position', new THREE.BufferAttribute(bubPos, 3));
+  scene.add(new THREE.Points(bubG, new THREE.PointsMaterial({ color: '#e0fbff', size: 0.06, transparent: true, opacity: 0.7, depthWrite: false })));
+
+  const d = new THREE.Object3D();
+  return {
+    scene, hidden: ring, cam: [V(0, 2.6, 6.2), V(0, 0.8, -0.5)],
+    title: 'C-1：海の中（幻想的テイスト）',
+    desc: 'ステージごとに雰囲気を変える案の例です。青い霧、光の筋、揺らめく光、泳ぐ魚、揺れる海藻、立ちのぼる泡で、幻想的な海中を表現しました。',
+    find: '貝殻の山のどこかに「水色の宝石がついた金の指輪」があります',
+    update(t, dt) {
+      caustTex.offset.set(t * 0.015, t * 0.01);
+      weeds.forEach(w => { w.pivot.rotation.z = Math.sin(t * 1.2 + w.ph) * 0.12; w.pivot.rotation.x = Math.cos(t * 0.9 + w.ph) * 0.08; });
+      schools.forEach((s, k) => {
+        const m = fishMeshes[k];
+        s.f.forEach((f, i) => {
+          const a = s.sp * t + f.ph;
+          d.position.set(s.c.x + Math.cos(a) * (s.R + f.dr), s.c.y + f.dy + Math.sin(t * 2 + f.ph * 5) * 0.08, s.c.z + Math.sin(a) * (s.R + f.dr));
+          d.rotation.set(0, -(a + Math.PI / 2) + (s.sp < 0 ? Math.PI : 0), Math.sin(t * 8 + i) * 0.1);
+          d.updateMatrix(); m.setMatrixAt(i, d.matrix);
+        });
+        m.instanceMatrix.needsUpdate = true;
+      });
+      const p = bubG.attributes.position;
+      for (let i = 0; i < bubN; i++) { let y = p.getY(i) + dt * (0.4 + (i % 7) * 0.08); if (y > 9) y = 0; p.setY(i, y); p.setX(i, p.getX(i) + Math.sin(t * 3 + i) * 0.002); }
+      p.needsUpdate = true;
+    },
+  };
+}
+
+// ---------- ステージ：ミステリー洋館の書斎（C-2） ----------
+function buildMansion() {
+  seed = 99;
+  const scene = new THREE.Scene();
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.35;
+  scene.background = new THREE.Color('#070504');
+  scene.fog = new THREE.Fog('#0a0705', 7, 22);
+  scene.environment = envTex; scene.environmentIntensity = 0.06;
+  scene.add(new THREE.HemisphereLight('#40507a', '#1a1008', 0.35));
+  const moon = new THREE.DirectionalLight('#7088c8', 0.9); moon.position.set(-8, 6, 2); setShadow(moon, 8, 1024); scene.add(moon);
+
+  const wallTex = canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#1d2a21'; g.fillRect(0, 0, w, h);
+    for (let x = 0; x < w; x += 32) { g.fillStyle = '#233328'; g.fillRect(x, 0, 14, h); }
+    g.fillStyle = 'rgba(200,170,90,.10)';
+    for (let y = 16; y < h; y += 64) for (let x = 23; x < w; x += 64) { g.beginPath(); g.ellipse(x, y, 6, 12, 0, 0, Math.PI * 2); g.fill(); }
+  }, 4);
+  const SM = (color, r = 0.7, m = 0, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: r, metalness: m, ...o });
+  room(scene, null, {
+    floor: SM('#ffffff', 0.5, 0, { map: woodTex(22, 17, 3) }),
+    back: SM('#ffffff', 0.95, 0, { map: wallTex }), side: SM('#ffffff', 0.95, 0, { map: wallTex }),
+    ceiling: SM('#140e0a', 1),
+  });
+  // 月明かりの窓
+  const win = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 2.6), new THREE.MeshBasicMaterial({ color: '#8fa6e0' }));
+  win.position.set(-6.98, 3.4, 1.5); win.rotation.y = Math.PI / 2; scene.add(win);
+
+  // じゅうたん
+  const rugTex = canvasTex(512, 512, (g, w, h) => {
+    g.fillStyle = '#4a1010'; g.fillRect(0, 0, w, h);
+    g.strokeStyle = '#b08a3e'; g.lineWidth = 14; g.strokeRect(24, 24, w - 48, h - 48);
+    g.lineWidth = 3; g.strokeRect(54, 54, w - 108, h - 108);
+    g.fillStyle = 'rgba(176,138,62,.35)';
+    for (let y = 100; y < h - 80; y += 60) for (let x = 100; x < w - 80; x += 60) { g.beginPath(); g.moveTo(x, y - 18); g.lineTo(x + 18, y); g.lineTo(x, y + 18); g.lineTo(x - 18, y); g.fill(); }
+  });
+  rugTex.repeat.set(1, 1);
+  const rug = mesh(new THREE.PlaneGeometry(6, 4.5), SM('#fff', 1, 0, { map: rugTex }), V(0, 0.01, 0.6), scene); rug.rotation.x = -Math.PI / 2;
+
+  // 本棚と大量の本
+  const bookCols = ['#5a1a1a', '#1e3d2f', '#2b2f4a', '#6b4f2a', '#3a2a1a', '#7a6a4a', '#4a1f3a', '#8a7a5a'];
+  const shelfM = SM('#3b2414', 0.6);
+  const books = [];
+  [-3.6, 0.6].forEach(sx => {
+    const w = 4.2, h = 5.6, z = -6.65;
+    mesh(new THREE.BoxGeometry(w, h, 0.1), shelfM, V(sx + w / 2, h / 2, z - 0.3), scene);
+    mesh(new THREE.BoxGeometry(0.12, h, 0.7), shelfM, V(sx, h / 2, z), scene);
+    mesh(new THREE.BoxGeometry(0.12, h, 0.7), shelfM, V(sx + w, h / 2, z), scene);
+    for (let r = 0; r < 6; r++) {
+      const y = 0.1 + r * 0.92; mesh(new THREE.BoxGeometry(w, 0.08, 0.7), shelfM, V(sx + w / 2, y, z), scene);
+      let x = sx + 0.12;
+      while (x < sx + w - 0.25) {
+        if (rand() < 0.04) { x += rnd(0.2, 0.5); continue; }
+        const t = rnd(0.06, 0.13), bh = rnd(0.5, 0.78), lean = rand() < 0.08 ? rnd(-0.25, 0.25) : 0;
+        books.push({ p: V(x + t / 2, y + 0.04 + bh / 2, z + rnd(-0.03, 0.05)), s: V(t, bh, rnd(0.42, 0.55)), lean });
+        x += t + 0.005;
+      }
+    }
+  });
+  const bookMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), SM('#fff', 0.75), books.length);
+  { const d = new THREE.Object3D(), c = new THREE.Color();
+    books.forEach((b, i) => { d.position.copy(b.p); d.scale.copy(b.s); d.rotation.set(0, 0, b.lean); d.updateMatrix(); bookMesh.setMatrixAt(i, d.matrix); bookMesh.setColorAt(i, c.set(pick(bookCols))); });
+    bookMesh.castShadow = bookMesh.receiveShadow = true; scene.add(bookMesh); }
+
+  // 机
+  const desk = new THREE.Group(); desk.position.set(0, 0, 0.6); scene.add(desk);
+  const deskM = SM('#4a2c18', 0.45);
+  mesh(new THREE.BoxGeometry(3.2, 0.12, 1.6), deskM, V(0, 0.95, 0), desk);
+  [[-1.45, -0.65], [1.45, -0.65], [-1.45, 0.65], [1.45, 0.65]].forEach(([x, z]) => mesh(new THREE.BoxGeometry(0.12, 0.9, 0.12), deskM, V(x, 0.45, z), desk));
+
+  // 鍵の山（ここに隠しアイテム）
+  const keyG = (() => {
+    const bow = new THREE.TorusGeometry(0.05, 0.015, 6, 14);
+    const shaft = new THREE.BoxGeometry(0.17, 0.018, 0.018); shaft.translate(0.135, 0, 0);
+    const t1 = new THREE.BoxGeometry(0.03, 0.045, 0.016); t1.translate(0.2, -0.028, 0);
+    const t2 = t1.clone(); t2.translate(-0.045, 0, 0);
+    return mergeGeometries([bow, shaft, t1, t2]);
+  })();
+  const pileC = V(0.2, 1.01, 0.6), R = 0.85, H = 0.32;
+  scene.add(scatter(keyG, SM('#fff', 0.35, 0.9), 300, () => moundPos(pileC, R, H), ['#b5893b', '#8c6a2f', '#c9a458', '#6e6e6e', '#9a8a6a']));
+  // 古いコインも混ぜる
+  scene.add(scatter(new THREE.CylinderGeometry(0.045, 0.045, 0.01, 16), SM('#fff', 0.3, 1), 120, () => moundPos(pileC, R, H), ['#c9a458', '#a0a0a0', '#9c6b3a']));
+
+  // 隠しアイテム：金のチェスのポーン
+  const pts = [[0, 0], [0.06, 0], [0.06, 0.015], [0.042, 0.03], [0.03, 0.07], [0.022, 0.1], [0.036, 0.11], [0.02, 0.12], [0.032, 0.15], [0.022, 0.172], [0, 0.178]].map(([x, y]) => new THREE.Vector2(x, y));
+  const pawn = mesh(new THREE.LatheGeometry(pts, 20), SM('#d4a73c', 0.25, 1), V(0, 0, 0), scene);
+  const dx = -0.42, dz = -0.22; pawn.position.set(pileC.x + dx, pileC.y + moundTop(R, H, dx, dz) * 0.85, pileC.z + dz); pawn.rotation.set(0.2, 0, 1.25);
+
+  // ロウソク（揺れる灯り）
+  const flames = [];
+  function candle(pos, h, parent, castShadow) {
+    const g = new THREE.Group(); g.position.copy(pos); parent.add(g);
+    mesh(new THREE.CylinderGeometry(0.045, 0.05, h, 16), SM('#efe6d0', 0.9), V(0, h / 2, 0), g);
+    const flame = new THREE.Mesh(new THREE.SphereGeometry(0.03, 10, 8), new THREE.MeshBasicMaterial({ color: '#ffcf70' }));
+    flame.scale.set(1, 2, 1); flame.position.y = h + 0.05; g.add(flame);
+    const L = new THREE.PointLight('#ff9a3c', 3.5, 0, 2); L.position.y = h + 0.12; g.add(L);
+    if (castShadow) { L.castShadow = true; L.shadow.mapSize.set(512, 512); L.shadow.bias = -0.002; }
+    flames.push({ L, flame, base: L.intensity, ph: rnd(0, 6.3) });
+  }
+  candle(V(-1.2, 1.01, 0.3), 0.32, scene, true);
+  candle(V(1.3, 1.01, 0.1), 0.24, scene, false);
+
+  // シャンデリア（上空に飛べば見える場所）
+  const ch = new THREE.Group(); ch.position.set(0, 5.4, 0.6); scene.add(ch);
+  const brass = SM('#a07a3a', 0.3, 1);
+  mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.6, 6), brass, V(0, 0.8, 0), ch);
+  const ringC = mesh(new THREE.TorusGeometry(0.9, 0.04, 8, 40), brass, V(0, 0, 0), ch); ringC.rotation.x = Math.PI / 2;
+  for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2; const g = new THREE.Group(); g.position.set(Math.cos(a) * 0.9, 0.02, Math.sin(a) * 0.9); ch.add(g);
+    mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.18, 10), SM('#efe6d0', 0.9), V(0, 0.09, 0), g);
+    const f = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), new THREE.MeshBasicMaterial({ color: '#ffcf70' })); f.scale.set(1, 2, 1); f.position.y = 0.22; g.add(f); }
+  const chL = new THREE.PointLight('#ffb060', 9, 0, 2); chL.position.y = 0.2; ch.add(chL); flames.push({ L: chL, flame: null, base: 9, ph: 1 });
+
+  // 柱時計（振り子が動く）
+  const clock = new THREE.Group(); clock.position.set(6.55, 0, -2.5); clock.rotation.y = -Math.PI / 2; scene.add(clock);
+  mesh(new THREE.BoxGeometry(0.9, 2.8, 0.5), SM('#3a2010', 0.4), V(0, 1.4, 0), clock);
+  const face = new THREE.Mesh(new THREE.CircleGeometry(0.32, 40), SM('#e9dfc4', 0.6)); face.position.set(0, 2.3, 0.26); clock.add(face);
+  const hand1 = mesh(new THREE.BoxGeometry(0.02, 0.24, 0.01), SM('#111'), V(0, 2.38, 0.27), clock);
+  const hand2 = mesh(new THREE.BoxGeometry(0.02, 0.17, 0.01), SM('#111'), V(0.05, 2.33, 0.27), clock); hand2.rotation.z = -1.2;
+  const pend = new THREE.Group(); pend.position.set(0, 1.9, 0.26); clock.add(pend);
+  mesh(new THREE.BoxGeometry(0.02, 0.9, 0.01), brass, V(0, -0.45, 0), pend);
+  mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.02, 24).rotateX(Math.PI / 2), brass, V(0, -0.92, 0), pend);
+
+  // 額縁
+  [[-6.95, 3.6, -3.2], [-6.95, 3.2, 4.4]].forEach(([x, y, z], i) => {
+    const g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = Math.PI / 2; scene.add(g);
+    mesh(new THREE.BoxGeometry(1.5 - i * 0.3, 1.9 - i * 0.4, 0.08), brass, V(0, 0, 0), g);
+    mesh(new THREE.BoxGeometry(1.25 - i * 0.3, 1.65 - i * 0.4, 0.09), SM(i ? '#1a2a3a' : '#2a1a14', 0.9), V(0, 0, 0.005), g);
+  });
+  // 地球儀
+  const globe = new THREE.Group(); globe.position.set(4.2, 0, 2.6); scene.add(globe);
+  mesh(new THREE.CylinderGeometry(0.05, 0.3, 1, 16), deskM, V(0, 0.5, 0), globe);
+  const gm = mesh(new THREE.SphereGeometry(0.42, 32, 24), SM('#6b7a5a', 0.5), V(0, 1.42, 0), globe);
+  const gr = mesh(new THREE.TorusGeometry(0.46, 0.015, 8, 40), brass, V(0, 1.42, 0), globe); gr.rotation.y = 0.4;
+
+  return {
+    scene, hidden: pawn, cam: [V(0.4, 2.6, 5.4), V(0, 1.2, -0.6)],
+    title: 'C-2：ミステリー洋館の書斎（暗めで陰影強め）',
+    desc: 'ステージごとに雰囲気を変える案の例です。月明かりとロウソクの揺れる灯りだけで照らし、影を濃く出しています。大量の本、鍵の山、柱時計の振り子で、謎めいた雰囲気を出しました。',
+    find: '机の上の鍵の山のどこかに「金のチェスの駒（ポーン）」があります',
+    update(t) {
+      flames.forEach(f => { const k = 0.85 + Math.sin(t * 13 + f.ph) * 0.08 + Math.sin(t * 7.3 + f.ph) * 0.06 + (Math.random() - 0.5) * 0.06;
+        f.L.intensity = f.base * k; if (f.flame) f.flame.scale.set(1, 2 * k, 1); });
+      pend.rotation.z = Math.sin(t * 2.2) * 0.18;
+      gm.rotation.y = t * 0.1;
+    },
+  };
+}
+
+// ---------- 切り替え・クリック判定 ----------
+const builders = { pastel: () => buildToyRoom('pastel'), real: () => buildToyRoom('real'), sea: buildSea, mansion: buildMansion };
+let cur = null, marker = null, found = false, statsEl;
+const info = document.getElementById('info'), toast = document.getElementById('toast');
+
+function dispose(scene) {
+  scene.traverse(o => { o.geometry?.dispose(); [].concat(o.material || []).forEach(m => { m.map?.dispose(); m.dispose(); }); });
+}
+function load(mode) {
+  if (cur) dispose(cur.scene);
+  cur = builders[mode](); found = false;
+  camera.position.copy(cur.cam[0]); controls.target.copy(cur.cam[1]); controls.update();
+  marker = new THREE.Mesh(new THREE.SphereGeometry(0.22, 24, 16), new THREE.MeshBasicMaterial({ color: '#ff2a6d', wireframe: true, transparent: true, opacity: 0.9, depthTest: false }));
+  marker.renderOrder = 999; marker.visible = false; cur.hidden.getWorldPosition(marker.position); cur.scene.add(marker);
+  document.querySelectorAll('#ui button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+  info.innerHTML = `<h2>${cur.title}</h2><div>${cur.desc}</div>
+    <div class="find">🔍 お試し：${cur.find}（見つけたらクリック）</div>
+    <button id="ans">答えを表示</button><div class="stats" id="stats"></div>
+    <div class="stats">操作：ドラッグで回転／ホイールでズーム／右ドラッグで移動（このサンプルだけの操作です）</div>`;
+  document.getElementById('ans').onclick = () => { marker.visible = !marker.visible; };
+  statsEl = document.getElementById('stats');
+}
+document.querySelectorAll('#ui button').forEach(b => b.onclick = () => load(b.dataset.mode));
+
+const ray = new THREE.Raycaster(), ptr = new THREE.Vector2(); let downAt = null;
+renderer.domElement.addEventListener('pointerdown', e => downAt = [e.clientX, e.clientY]);
+renderer.domElement.addEventListener('pointerup', e => {
+  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5) return;
+  ptr.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ptr, camera);
+  const hit = ray.intersectObjects(cur.scene.children, true).find(h => h.object !== marker && h.object.type !== 'Points' && h.object.material?.blending !== THREE.AdditiveBlending);
+  let o = hit?.object, ok = false; while (o) { if (o === cur.hidden) { ok = true; break; } o = o.parent; }
+  if (ok && !found) { found = true; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 1400); marker.visible = true; }
+});
+
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+const clock = new THREE.Clock(); let acc = 0;
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  cur.update(t, dt);
+  if (marker.visible) marker.scale.setScalar(1 + Math.sin(t * 6) * 0.15);
+  controls.update(); renderer.render(cur.scene, camera);
+  if ((acc += dt) > 0.5) { acc = 0; const i = renderer.info.render; statsEl.textContent = `参考：ポリゴン数 ${i.triangles.toLocaleString()} / 描画回数 ${i.calls}`; }
+});
+load('pastel');
+</script>
+</body>
+</html>

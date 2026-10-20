@@ -1,0 +1,7 @@
+{
+  "textures": {
+  },
+  "models": {
+    "teddy": { "file": "models/teddy.glb", "height": 0.62 }
+  }
+}
