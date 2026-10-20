@@ -1,6 +1,7 @@
 // ゲーム全体の進行：モード切替・ステージ読み込み・ミッケ判定・お題リスト・ヒント・記録
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 import { StereoEffect } from 'three/addons/effects/StereoEffect.js';
 import { Player } from './player.js';
 import { V, noRay, disposeTree } from './util.js';
@@ -38,7 +39,14 @@ renderer.setSize(innerWidth, innerHeight);
 document.body.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.03, 60);
-const envTex = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+// 本物の屋根裏で撮った光（Poly Haven「pine_attic」CC0）。読めたら映り込みを差し替える
+new RGBELoader().load('assets/hdri/pine_attic_1k.hdr', hdr => {
+  const t = pmrem.fromEquirectangular(hdr).texture; hdr.dispose();
+  if (scene.environment === game.envTex) scene.environment = t;
+  game.envTex = t;
+}, undefined, () => console.warn('HDRIが読み込めませんでした'));
 const stereo = new StereoEffect(renderer);
 const player = new Player(renderer, camera);
 scene.add(player.rig);
@@ -114,7 +122,7 @@ async function startPage(stageId, n) {
   const info = stage.setPage(n);
   page = { stageId, n, title: info.title, items: info.targets.map(t => ({ ...t, found: false })),
     secret: { ...info.secret, found: false }, time: 0, hints: 0, cleared: false };
-  renderList(); combo = 0; lastFoundAt = -99;
+  memoOpenUntil = performance.now() + 9000; renderList(); combo = 0; lastFoundAt = -99;
   showLoading(false);
   await fade(0, 1.4);                                   // 丸窓の光が、ゆっくり差しこむ
   toast(info.title, true, info.hasLens ? '（ルーペでしか 見えない ものも あるらしい……）' : '');
@@ -183,6 +191,7 @@ function found(it, secret) {
   spawnBurst(wp, secret);
   if (secret) { sfx.secret(); toast('ひみつを ミッケ！', false, '（……だれにも 内緒だよ）'); spawnFloater('ひみつ', wp, '#e9b8a8'); }
   else { sfx.mikkeCombo(combo, wp); toast('ミッケ！', false, combo >= 2 ? `（……${kanjiNum(combo + 1)}つ つづけて）` : murmur()); spawnFloater('ミッケ！', wp); }
+  openMemo(4);
   scene.attach(it.obj); flying.push({ obj: it.obj, t: -0.35, from: it.obj.position.clone(), s: it.obj.scale.x });
   renderList();
   if (!page.cleared && page.items.every(i => i.found)) {
@@ -258,15 +267,17 @@ function listState() {
   return { title: page.title, time: page.time, hintsLeft: HINTS - page.hints, items: page.items, secretFound: page.secret.found, secretName: page.secret.name, cleared: page.cleared };
 }
 let listVisible = true;
+// メモ：ふだんは1行に折りたたみ、ページの始めと見つけた直後だけ広がる。Tab（📜）で広げたままにできる
+let memoPinned = false, memoOpenUntil = 0;
+const openMemo = (sec) => { memoOpenUntil = performance.now() + sec * 1000; renderList(); };
 function renderList() {
   const el = $('#list');
-  if (!page) { el.innerHTML = '<div class="t">絵本の 部屋</div><div class="lead">書見台の 絵本を ひらいて、<br>もくじから ページを えらんでね。</div>'; el.hidden = !listVisible; draw3dList(); return; }
+  el.classList.toggle('collapsed', !memoPinned && performance.now() > memoOpenUntil);
+  if (!page) { el.innerHTML = '<div class="head"><span class="t">絵本の 部屋</span></div><div class="body"><div class="lead">書見台の 絵本を ひらいて、もくじから えらんでね。</div></div>'; el.classList.remove('collapsed'); el.hidden = !listVisible; draw3dList(); return; }
   const left = page.items.filter(i => !i.found).length;
-  el.innerHTML = `<div class="t">${page.title.split('　')[0]}</div><div class="left">${page.cleared ? '' : `あと ${kanjiNum(left)}つ`}</div>` +
-    `<div class="lead">${page.cleared ? 'すべて 見つけだしたね。' : 'この部屋の どこかに かくれているよ。'}</div>` +
-    page.items.map(i => `<div class="it ${i.found ? 'done' : ''}">${i.name}</div>`).join('') +
-    `<div class="sec ${page.secret.found ? 'done' : ''}">${page.secret.found ? `ひみつ：${page.secret.name}` : '……それから、リストにない ひみつが ひとつ。'}</div>` +
-    `<div class="time">${fmtTime(page.time)}</div>`;
+  el.innerHTML = `<div class="head"><span class="t">${page.title.split('　')[0]}</span><span class="left">${page.cleared ? 'すべて 見つけた' : `あと ${kanjiNum(left)}つ`}</span><span class="time">${fmtTime(page.time)}</span></div>` +
+    `<div class="body">${page.items.map(i => `<div class="it ${i.found ? 'done' : ''}">${i.name}</div>`).join('')}` +
+    `<div class="sec ${page.secret.found ? 'done' : ''}">${page.secret.found ? `ひみつ：${page.secret.name}` : '＋ リストに ない ひみつ'}</div></div>`;
   el.hidden = !listVisible;
   draw3dList();
 }
@@ -429,7 +440,7 @@ addEventListener('keydown', e => {
   if (e.code === 'Escape' && player.fallback && player.locked) { player.unlockFallback(); return; }
   if (e.code === 'KeyH') useHint();
   if (e.code === 'KeyL') toggleLens();
-  if (e.code === 'Tab') { listVisible = !listVisible; renderList(); }
+  if (e.code === 'Tab') { memoPinned = !memoPinned; renderList(); }
   if (e.code === 'KeyE' && player.locked) activate(pick(), 'gimmick');
 });
 // スマホ手持ち：スティック・上下ボタン・タップ・ドラッグ
@@ -452,7 +463,7 @@ addEventListener('keydown', e => {
       activate(pick(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)));
     down = null; });
   $('#phonebtns').addEventListener('click', e => { const a = e.target.dataset.act;
-    if (a === 'list') { listVisible = !listVisible; renderList(); } if (a === 'hint') useHint(); if (a === 'lens') toggleLens(); if (a === 'menu') showMenu(); });
+    if (a === 'list') { memoPinned = !memoPinned; renderList(); } if (a === 'hint') useHint(); if (a === 'lens') toggleLens(); if (a === 'menu') showMenu(); });
 })();
 
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); stereo.setSize(innerWidth, innerHeight); resizeComposer(); });

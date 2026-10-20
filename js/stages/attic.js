@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { V, makeRng, canvasTex, woodTex, mesh, setShadow, scatter, moundPoint, roundedBox, starShape, noRay, clamp01, lerp, smooth } from '../util.js';
 import { TOYS, TOY_MAP, buildToy, isUltra } from '../catalog/toys.js';
 import { bakeStatic, mergeStatic } from '../bake.js';
+import { pbr, boxUV, setPbrLite } from '../pbr.js';
 import { tex, swapModel, hasModel } from '../assets.js';
 import { addAtticFx } from './attic_fx.js';
 
@@ -39,7 +40,7 @@ export function createAttic(game) {
       : new THREE.MeshStandardMaterial({ color, roughness: r, metalness: m, ...o });
     matCache.set(key, mat); return mat;
   };
-  const LITE = !!game.quality.lite;   // Quest向け：小物は影を落とさない
+  const LITE = !!game.quality.lite; setPbrLite(LITE);   // Quest向け：小物は影を落とさない
   const anims = []; const animate = (dur, fn, done) => anims.push({ t: 0, dur, fn, done });
   const colliders = [], box = (a, b, c, d, e, f) => colliders.push(new THREE.Box3(V(a, b, c), V(d, e, f)));
   const spots = {};                // 名前つきの隠し場所 → () => { p, parent?, rot? }
@@ -58,12 +59,13 @@ export function createAttic(game) {
   // 部屋：床・低い壁・斜めの屋根・妻壁（丸窓）・梁
   // =================================================================
   const boards = tex('attic_floor', woodTex(rng, 26, 30, [2, 3]));
-  const floor = mesh(new THREE.PlaneGeometry(W * 2, D * 2), P('#fff', 0.7, 0, { map: boards }), V(0, 0, 0), root, { cast: false }); floor.rotation.x = -Math.PI / 2;
+  const floorM = pbr('floor', { color: '#d9cbb8', tile: 2.4, normal: 1.2 });
+  const floor = mesh(new THREE.PlaneGeometry(W * 2, D * 2), floorM, V(0, 0, 0), root, { cast: false }); floor.rotation.x = -Math.PI / 2;
   const wallTex = tex('attic_wall', woodTex(rng, 28, 36, [3, 1]));
-  const wallM = P('#fff', 0.85, 0, { map: wallTex, side: THREE.DoubleSide });
+  const wallM = pbr('planks', { color: '#c9b49c', tile: 1.8, normal: 1.3, side: THREE.DoubleSide });
   [-1, 1].forEach(s => { const m = mesh(new THREE.PlaneGeometry(D * 2, KNEE), wallM, V(s * W, KNEE / 2, 0), root, { cast: false }); m.rotation.y = -s * Math.PI / 2; });
   const roofTex = tex('attic_roof', woodTex(rng, 24, 26, [5, 2]));
-  const roofM = P('#fff', 0.9, 0, { map: roofTex, side: THREE.DoubleSide });
+  const roofM = pbr('roof', { color: '#8a6a52', tile: 1.6, normal: 1.4, turn: true, side: THREE.DoubleSide });   // 板は棟と平行に
   const slope = Math.hypot(W, RIDGE - KNEE), ang = Math.atan2(RIDGE - KNEE, W);
   [-1, 1].forEach(s => { const m = mesh(new THREE.PlaneGeometry(slope, D * 2), roofM, V(s * W / 2, (KNEE + RIDGE) / 2, 0), root, { cast: true }); m.rotation.set(-Math.PI / 2, 0, 0); m.rotateOnWorldAxis(V(0, 0, 1), -s * ang); });
   // 妻壁（奥に丸窓の穴）
@@ -72,7 +74,7 @@ export function createAttic(game) {
     if (holeR) { const h = new THREE.Path(); h.absarc(0, holeY, holeR, 0, Math.PI * 2, true); sh.holes.push(h); }
     const g = new THREE.ShapeGeometry(sh, 32); const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 0.3, uv.getY(i) * 0.3);
     const t = wallTex.clone(); t.repeat.set(1, 1); t.needsUpdate = true;
-    const m = mesh(g, P('#fff', 0.85, 0, { map: t, side: THREE.DoubleSide }), V(0, 0, z), root, { cast: true }); return m;
+    const m = mesh(g, wallM, V(0, 0, z), root, { cast: true }); return m;
   };
   const WIN = { y: 3.5, r: 0.6 };
   gable(-D, WIN.r, WIN.y); gable(D, 0.32, 4.3);
@@ -81,21 +83,24 @@ export function createAttic(game) {
   mesh(new THREE.CircleGeometry(WIN.r, 40), skyM, V(0, WIN.y, -D - 0.05), root, { cast: false });
   const frontSky = mesh(new THREE.CircleGeometry(0.32, 30), skyM, V(0, 4.3, D + 0.05), root, { cast: false }); frontSky.rotation.y = Math.PI;
   // 窓枠と十字の桟
-  const frameM = P('#3a2a1c', 0.6);
+  const frameM = pbr('darkwood', { color: '#6a5040', tile: 0.6, rough: 0.9 });
   mesh(new THREE.TorusGeometry(WIN.r, 0.05, 10, 48), frameM, V(0, WIN.y, -D + 0.02), root);
   mesh(new THREE.BoxGeometry(WIN.r * 2, 0.04, 0.04), frameM, V(0, WIN.y, -D + 0.02), root);
   mesh(new THREE.BoxGeometry(0.04, WIN.r * 2, 0.04), frameM, V(0, WIN.y, -D + 0.02), root);
   const SILL = { y: WIN.y - WIN.r - 0.02 };
   mesh(new THREE.BoxGeometry(1.5, 0.05, 0.3), frameM, V(0, SILL.y, -D + 0.15), root);
   // 梁（垂木・棟木・つなぎ梁）
-  const beamM = P('#4a3524', 0.75, 0, { map: woodTex(rng, 22, 22, [1, 4]) });
+  const beamM = pbr('darkwood', { color: '#7a5e4a', tile: 1.1, rough: 1.1, normal: 1.6 });
+  const shelfM = pbr('table', { color: '#a08a78', tile: 0.9 });
   const beams = [];
   for (let z = -D + 0.3; z <= D - 0.2; z += 0.8) {
     [-1, 1].forEach(s => beams.push({ p: V(s * W / 2, (KNEE + RIDGE) / 2 - 0.08, z), rz: s * ang, s: V(slope, 0.14, 0.1) }));
     const ty = 4.3, half = (RIDGE - ty) / (RIDGE - KNEE) * W; beams.push({ p: V(0, ty, z), s: V(half * 2, 0.12, 0.1) });
   }
   beams.push({ p: V(0, RIDGE - 0.1, 0), s: V(0.14, 0.16, D * 2) });
-  inst(new THREE.BoxGeometry(1, 1, 1), beamM, beams);
+  // 梁は1本ずつ、長さに沿った木目を貼ってから置く（まとめ描画で1つになる）
+  beams.forEach(b => { const g = boxUV(new THREE.BoxGeometry(b.s.x, b.s.y, b.s.z), 1.1); g.userData.uvFixed = true;
+    const m = mesh(g, beamM, b.p, root); m.rotation.z = b.rz || 0; });
 
   // =================================================================
   // 光（3幕）
@@ -128,7 +133,7 @@ export function createAttic(game) {
   // 1. 中央ピアノ要塞（0, -0.4）
   // =================================================================
   const piano = new THREE.Group(); piano.position.set(-0.75, 0, 0.5); root.add(piano);   // 鍵盤の左端が原点、本体は -z（奥）へ
-  const pianoBlack = P('#0b0b0d', 0.08), pianoWood = P('#c08a50', 0.6), brass = P('#c9a458', 0.25, 1);
+  const pianoBlack = P('#0b0b0d', 0.08), pianoWood = pbr('table', { color: '#e0b080', tile: 0.5, rough: 0.8 }), brass = P('#c9a458', 0.25, 1);
   const outline = (inset = 0) => { const s = new THREE.Shape(), i = inset;
     s.moveTo(i, i); s.lineTo(1.5 - i, i); s.lineTo(1.5 - i, 0.45); s.bezierCurveTo(1.5 - i, 1.1, 1.0, 1.15, 0.6, 1.5 - i * 0.5); s.bezierCurveTo(0.42, 1.68, 0.3, 1.85 - i, 0.12, 1.85 - i); s.lineTo(i, 1.85 - i); s.closePath(); return s; };
   const bodyShape = outline(0); bodyShape.holes.push(new THREE.Path(outline(0.05).getPoints(40).reverse()));
@@ -188,7 +193,7 @@ export function createAttic(game) {
 
   // ピアノの椅子
   const bench = new THREE.Group(); bench.position.set(0, 0, 1.05); root.add(bench);
-  mesh(roundedBox(0.75, 0.08, 0.35, 0.02, 2), P('#3a1f1a', 0.9), V(0, 0.5, 0), bench);
+  mesh(roundedBox(0.75, 0.08, 0.35, 0.02, 2), pbr('leather', { color: '#2a1612', tile: 0.4 }), V(0, 0.5, 0), bench);
   [[-0.32, -0.14], [0.32, -0.14], [-0.32, 0.14], [0.32, 0.14]].forEach(([x, z]) => mesh(new THREE.CylinderGeometry(0.025, 0.02, 0.46, 8), pianoBlack, V(x, 0.23, z), bench));
   for (let i = 0; i < 4; i++) pool('bench', r => ({ p: V(r.range(-0.3, 0.3), 0.54, r.range(-0.12, 0.12)), parent: bench }));
   box(-0.4, 0, 0.85, 0.4, 0.55, 1.25);
@@ -261,7 +266,7 @@ export function createAttic(game) {
   // 4. 左奥：トランクと三面鏡（-2.0, -1.6）
   // =================================================================
   const trunk = new THREE.Group(); trunk.position.set(-1.95, 0, -1.55); trunk.rotation.y = 0.5; root.add(trunk);
-  const leather = P('#5a3a22', 0.7), tBrass = P('#b8902a', 0.3, 1);
+  const leather = pbr('leather', { color: '#5a3a22', tile: 0.5, normal: 1.4 }), tBrass = pbr('rust', { color: '#c8a050', tile: 0.4, metal: 1, rough: 0.7 });
   mesh(new THREE.BoxGeometry(1.0, 0.06, 0.55), leather, V(0, 0.03, 0), trunk);
   [[0, 0.27, 0.26, 1.0, 0.5, 0.04], [0, 0.27, -0.26, 1.0, 0.5, 0.04], [0.48, 0.27, 0, 0.04, 0.5, 0.55], [-0.48, 0.27, 0, 0.04, 0.5, 0.55]].forEach(([x, yy, z, w, h, d]) => mesh(new THREE.BoxGeometry(w, h, d), leather, V(x, yy, z), trunk));
   [-0.3, 0.3].forEach(x => mesh(new THREE.BoxGeometry(0.05, 0.52, 0.57), tBrass, V(x, 0.27, 0), trunk));
@@ -282,7 +287,7 @@ export function createAttic(game) {
   box(-2.55, 0, -2.0, -1.4, 0.75, -1.05);
   // 三面鏡（映り込みは環境マップで表現）
   const mirror = new THREE.Group(); mirror.position.set(-2.55, 0, -0.75); mirror.rotation.y = 1.2; root.add(mirror);
-  const mirrorM = P('#dfe8ee', 0.02, 1), mFrame = P('#5a3a1a', 0.5);
+  const mirrorM = P('#dfe8ee', 0.02, 1), mFrame = pbr('darkwood', { color: '#8a6048', tile: 0.7, rough: 0.6 });
   [-1, 0, 1].forEach(k => { const g = new THREE.Group(); g.position.x = k * 0.33; g.rotation.y = -k * 0.5; mirror.add(g);
     mesh(new THREE.BoxGeometry(0.34, 1.0, 0.04), mFrame, V(0, 1.0, 0), g); mesh(new THREE.PlaneGeometry(0.28, 0.92), mirrorM, V(0, 1.0, 0.021), g); });
   mesh(new THREE.BoxGeometry(1.1, 0.5, 0.4), mFrame, V(0, 0.25, 0.1), mirror);
@@ -299,7 +304,7 @@ export function createAttic(game) {
   mesh(new THREE.BoxGeometry(DW + 0.06, 0.05, DD + 0.04), greenM, V(0, 0.025, 0), doll);
   for (let f = 0; f < 3; f++) {
     const yy = 0.05 + f * DH;
-    mesh(new THREE.BoxGeometry(DW, 0.025, DD), P('#8a5a3a', 0.6, 0, { map: boards }), V(0, yy + 0.0125, 0), doll);
+    mesh(new THREE.BoxGeometry(DW, 0.025, DD), pbr('floor', { color: '#e8c8a0', tile: 0.45 }), V(0, yy + 0.0125, 0), doll);
     [-1, 1].forEach((side, k) => { mesh(new THREE.PlaneGeometry(DW / 2, DH), P('#fff', 0.9, 0, { map: papers[f * 2 + k] }), V(side * DW / 4, yy + DH / 2, -DD / 2 + 0.01), doll); });
   }
   [-1, 1].forEach(s => mesh(new THREE.BoxGeometry(0.03, DH * 3 + 0.05, DD), creamM, V(s * DW / 2, 0.05 + DH * 1.5, 0), doll));
@@ -307,7 +312,7 @@ export function createAttic(game) {
   mesh(new THREE.BoxGeometry(DW, DH * 3, 0.025), creamM, V(0, 0.05 + DH * 1.5, -DD / 2), doll);
   const roof = new THREE.Shape(); roof.moveTo(-DW / 2 - 0.05, 0); roof.lineTo(DW / 2 + 0.05, 0); roof.lineTo(0, 0.38); roof.closePath();
   const rg = new THREE.ExtrudeGeometry(roof, { depth: DD + 0.06, bevelEnabled: false }); rg.translate(0, 0, -(DD + 0.06) / 2);
-  mesh(rg, P('#4a3a30', 0.85), V(0, 0.05 + DH * 3, 0), doll);
+  mesh(rg, pbr('roof', { color: '#6a5048', tile: 0.35 }), V(0, 0.05 + DH * 3, 0), doll);
   mesh(new THREE.BoxGeometry(0.08, 0.16, 0.08), P('#8a3a2a', 0.8), V(0.3, 0.05 + DH * 3 + 0.3, 0), doll);
   // 小さな家具と、ビスクドール（目がこちらを追う）
   const mini = (x, f, build) => { const g = new THREE.Group(); g.position.set(x, 0.065 + f * DH, rng.range(-0.1, 0.05)); doll.add(g); build(g); return g; };
@@ -328,7 +333,7 @@ export function createAttic(game) {
   // 6. 奥中央：くまと椅子と蓄音機（0.2, -2.1）
   // =================================================================
   const chair = new THREE.Group(); chair.position.set(0.95, 0, -2.0); chair.rotation.y = -0.35; root.add(chair);
-  const velvet = P('#5a1424', 0.95, 0, isUltra() ? { sheen: 1, sheenRoughness: 0.5, sheenColor: new THREE.Color('#c86a7a') } : {});
+  const velvet = pbr('velvet', { color: '#a04a58', tile: 0.35, normal: 0.8, ...(isUltra() ? { physical: true, sheen: 1, sheenRoughness: 0.5, sheenColor: new THREE.Color('#c86a7a') } : {}) });
   mesh(roundedBox(0.8, 0.18, 0.7, 0.06, 3), velvet, V(0, 0.42, 0), chair);
   const cushion = mesh(roundedBox(0.62, 0.1, 0.55, 0.05, 3), velvet, V(0, 0.55, 0.04), chair);
   mesh(roundedBox(0.8, 0.7, 0.16, 0.06, 3), velvet, V(0, 0.85, -0.3), chair);
@@ -353,7 +358,7 @@ export function createAttic(game) {
   // 蓄音機（ラッパの奥に指輪）
   const gram = new THREE.Group(); gram.position.set(-0.55, 0, -2.25); gram.rotation.y = 0.5; gram.userData.dynamic = true; root.add(gram);
   gram.userData.interact = { kind: 'play', dwell: 1.0, fn: () => fx.playGramophone(gram.getWorldPosition(V()).setY(1)) };
-  mesh(new THREE.BoxGeometry(0.5, 0.6, 0.45), P('#3a2414', 0.4), V(0, 0.3, 0), gram);   // サイドテーブル
+  mesh(new THREE.BoxGeometry(0.5, 0.6, 0.45), pbr('table', { color: '#7a5a48', tile: 0.6, rough: 0.7 }), V(0, 0.3, 0), gram);   // サイドテーブル
   mesh(new THREE.BoxGeometry(0.34, 0.14, 0.34), P('#6b3a1a', 0.3, 0, { map: woodTex(rng, 18, 28, [1, 1]) }), V(0, 0.67, 0), gram);
   mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.01, 32), P('#111', 0.2), V(0, 0.745, 0), gram);
   mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.25, 8), brass, V(0.13, 0.87, -0.1), gram);
@@ -367,7 +372,7 @@ export function createAttic(game) {
   // 7. 中空・左：鳥かご（-1.1, -0.2）
   // =================================================================
   const cage = new THREE.Group(); cage.userData.dynamic = true; cage.position.set(-1.1, 2.85, -0.2); root.add(cage);
-  const iron = P('#2b2b2e', 0.5, 0.8);
+  const iron = pbr('rust', { color: '#4a4440', tile: 0.3, metal: 0.8, rough: 0.9 });
   mesh(new THREE.CylinderGeometry(0.004, 0.004, 4.3 - 2.85 - 0.7, 4), iron, V(0, 0.7 + (4.3 - 2.85 - 0.7) / 2, 0), cage, { cast: false });   // 鎖
   mesh(new THREE.CylinderGeometry(0.3, 0.32, 0.05, 32), iron, V(0, 0, 0), cage);
   mesh(new THREE.SphereGeometry(0.3, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), iron, V(0, 0.55, 0), cage).material = P('#2b2b2e', 0.5, 0.8, { wireframe: true });
@@ -427,7 +432,7 @@ export function createAttic(game) {
   // 低い壁ぎわの本棚（本が多いのは良い）
   // =================================================================
   const lowBooks = [];
-  [-1, 1].forEach(s => { [0.05, 0.62, 1.2].forEach(yy => { mesh(new THREE.BoxGeometry(0.3, 0.03, D * 2 - 0.4), beamM, V(s * (W - 0.15), yy, 0), root);
+  [-1, 1].forEach(s => { [0.05, 0.62, 1.2].forEach(yy => { mesh(new THREE.BoxGeometry(0.3, 0.03, D * 2 - 0.4), shelfM, V(s * (W - 0.15), yy, 0), root);
     let z = -D + 0.25; while (z < D - 0.25) { if (rng() < 0.12) { const zz = z + 0.1; pool('lowShelf', () => ({ p: V(s * (W - 0.15), yy + 0.015, zz), rot: [0, -s * Math.PI / 2, 0] })); z += 0.22; continue; }
       const th = rng.range(0.02, 0.055), bh = rng.range(0.16, 0.4), lean = rng() < 0.1 ? rng.range(-0.3, 0.3) : 0;
       lowBooks.push({ p: V(s * (W - 0.15), yy + 0.015 + bh / 2, z + th / 2), rx: lean, s: V(rng.range(0.16, 0.24), bh, th), c: new THREE.Color(rng.pick(BOOKC)).offsetHSL(0, rng.range(-0.1, 0.05), rng.range(-0.06, 0.06)).getStyle() });
@@ -491,7 +496,7 @@ export function createAttic(game) {
     warm.forEach(w => { w.L.intensity = w.power * [0.1, 1, 0.55][act]; if (w.bulb) w.bulb.visible = act > 0; });
     shaftM.color.set(['#ffd9a0', '#ffb8c0', '#9ab4ff'][act]); shaftM.opacity = [0.08, 0.04, 0.06][act];
     dustM.color.set(['#ffe6b0', '#ffd0d0', '#c8d8ff'][act]);
-    game.scene.environmentIntensity = [0.4, 0.3, 0.12][act];
+    game.scene.environmentIntensity = [0.55, 0.38, 0.14][act];
     glowMats.forEach(m => m.emissiveIntensity = act === 2 ? 1.6 : 0.2);
   }
   function setPage(n) {

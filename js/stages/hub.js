@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { V, FONT, INK, PAPER, SEAL, BRASS, makeRng, canvasTex, woodTex, mesh, setShadow, noRay, addDust, smooth } from '../util.js';
 import { Panel, paper, fmtTime } from '../ui3d.js';
 import { tex } from '../assets.js';
+import { pbr, fitUV, setPbrLite } from '../pbr.js';
 
 export const BOOKS = [
   { id: 'toyroom', title: 'やねうらの へや', ready: true, color: '#5a1212',
@@ -41,15 +42,16 @@ export function createHub(game) {
   const W = 6, D = 5, H = 3.4;
 
   // ---------- 部屋 ----------
-  const floor = mesh(new THREE.PlaneGeometry(W, D), SM('#fff', 0.55, 0, { map: tex('hub_floor', woodTex(rng, 24, 20, [2, 2])) }), V(0, 0, 0), root, { cast: false });
+  setPbrLite(game.quality.lite);
+  const floor = fitUV(mesh(new THREE.PlaneGeometry(W, D), addDust(pbr('floor', { color: '#a89480', tile: 2.2, normal: 1.2 })), V(0, 0, 0), root, { cast: false }));
   floor.rotation.x = -Math.PI / 2;
   const wallTex = canvasTex(256, 256, (c, w, h) => { c.fillStyle = '#2a2420'; c.fillRect(0, 0, w, h);
     for (let x = 0; x < w; x += 32) { c.fillStyle = '#302822'; c.fillRect(x, 0, 12, h); }
     c.fillStyle = 'rgba(230,200,120,.07)'; for (let y = 20; y < h; y += 64) for (let x = 24; x < w; x += 64) { c.beginPath(); c.arc(x, y, 7, 0, 7); c.fill(); } }, [3, 2]);
   tex('hub_wall', wallTex);
-  const wm = SM('#fff', 0.95, 0, { map: wallTex });
+  const wm = pbr('plaster', { color: '#6a5a50', tile: 2.4, normal: 1.5 });
   [[V(0, H / 2, -D / 2), 0], [V(-W / 2, H / 2, 0), Math.PI / 2], [V(W / 2, H / 2, 0), -Math.PI / 2], [V(0, H / 2, D / 2), Math.PI]].forEach(([p, ry]) => {
-    const m = mesh(new THREE.PlaneGeometry(ry % Math.PI ? D : W, H), wm, p, root, { cast: false }); m.rotation.y = ry; });
+    const m = fitUV(mesh(new THREE.PlaneGeometry(ry % Math.PI ? D : W, H), wm, p, root, { cast: false })); m.rotation.y = ry; });
   const ceil = mesh(new THREE.PlaneGeometry(W, D), SM('#120e0c', 1), V(0, H, 0), root, { cast: false }); ceil.rotation.x = Math.PI / 2;
   // 月明かりの窓（ろうそくが灯るまでは、これだけ）
   const win = mesh(new THREE.PlaneGeometry(1.1, 1.6), new THREE.MeshBasicMaterial({ color: '#5a6a92' }), V(-W / 2 + 0.01, 1.9, -0.6), root, { cast: false }); win.rotation.y = Math.PI / 2;
@@ -58,8 +60,8 @@ export function createHub(game) {
   const hemi = new THREE.HemisphereLight('#4a4a68', '#20140c', 0.12); root.add(hemi);
 
   // 本棚
-  const shelfM = SM('#3b2414', 0.6);
-  mesh(new THREE.BoxGeometry(5, 3, 0.4), shelfM, V(0, 1.5, -D / 2 + 0.2), root);
+  const shelfM = pbr('darkwood', { color: '#7a5848', tile: 1.2, rough: 0.8 });
+  fitUV(mesh(new THREE.BoxGeometry(5, 3, 0.4), shelfM, V(0, 1.5, -D / 2 + 0.2), root));
   const books = [];
   for (let r = 0; r < 5; r++) { let x = -2.35; while (x < 2.3) { const t = rng.range(0.04, 0.1), h = rng.range(0.3, 0.5);
     books.push([x + t / 2, 0.1 + r * 0.58 + h / 2, t, h, rng() < 0.08 ? rng.range(-0.2, 0.2) : 0]); x += t + 0.004; } }
@@ -75,9 +77,9 @@ export function createHub(game) {
 
   // 机（奥）
   const desk = new THREE.Group(); desk.position.set(0, 0, -1.2); root.add(desk);
-  const deskM = SM('#4a2c18', 0.45);
-  mesh(new THREE.BoxGeometry(2.2, 0.08, 0.9), deskM, V(0, 0.78, 0), desk);
-  [[-1, -0.38], [1, -0.38], [-1, 0.38], [1, 0.38]].forEach(([x, z]) => mesh(new THREE.BoxGeometry(0.08, 0.78, 0.08), deskM, V(x, 0.39, z), desk));
+  const deskM = addDust(pbr('table', { color: '#a07a60', tile: 1.0, rough: 0.7 }));
+  fitUV(mesh(new THREE.BoxGeometry(2.2, 0.08, 0.9), deskM, V(0, 0.78, 0), desk));
+  [[-1, -0.38], [1, -0.38], [-1, 0.38], [1, 0.38]].forEach(([x, z]) => fitUV(mesh(new THREE.BoxGeometry(0.08, 0.78, 0.08), deskM, V(x, 0.39, z), desk)));
   // 机の上：まだひらけない絵本（ほこりをかぶって積まれている）
   const later = BOOKS.filter(b => !b.ready).map((b, i) => {
     const g = new THREE.Group(); g.position.set(0.55 + i * 0.05, 0.82 + i * 0.075, -0.05 + i * 0.03); g.rotation.y = 0.3 - i * 0.25; desk.add(g);

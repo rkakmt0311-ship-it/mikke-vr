@@ -4,6 +4,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { KINDS, makeKindMaterial, isUltra } from './catalog/toys.js';
 import { atlasTex } from './catalog/atlas.js';
 import { addDust } from './util.js';
+import { boxUV } from './pbr.js';
 
 const batchMats = {};
 function batchMat(kind) {
@@ -18,7 +19,7 @@ const baseRaycast = THREE.Mesh.prototype.raycast;
 // 色以外（質感・テクスチャ・透明度など）が同じ材質は1つにまとめ、色は頂点ごとに持たせる
 function signature(mt) {
   return [mt.type, mt.roughness, mt.metalness, mt.map?.uuid, mt.normalMap?.uuid, mt.transparent, mt.opacity, mt.side, mt.wireframe,
-    mt.emissive?.getHexString(), mt.emissiveIntensity, mt.clearcoat, mt.sheen, mt.depthWrite, mt.alphaTest].join('|');
+    mt.emissive?.getHexString(), mt.emissiveIntensity, mt.clearcoat, mt.sheen, mt.depthWrite, mt.alphaTest, mt.roughnessMap?.uuid, mt.aoMap?.uuid, mt.userData.tile].join('|');
 }
 export function mergeStatic(root, { raycast = false } = {}) {
   root.updateMatrixWorld(true);
@@ -34,6 +35,8 @@ export function mergeStatic(root, { raycast = false } = {}) {
     if (!g.attributes.normal) g.computeVertexNormals();
     g.morphAttributes = {};
     g.applyMatrix4(m.multiplyMatrices(inv, o.matrixWorld));
+    // 実写の質感：世界座標（メートル）から貼り直して、木目が伸びないようにする
+    if (o.material.userData.tile && !o.geometry.userData.uvFixed) boxUV(g, o.material.userData.tile, o.material.userData.turn);
     const c = o.material.color, n = g.attributes.position.count, col = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
