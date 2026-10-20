@@ -535,7 +535,7 @@ export function createAttic(game) {
     if (LITE) baked.forEach(m => { m.castShadow = false; });
     fx.onPage(n, page, targets.concat([secret]));
     const hasLens = page.secret[2] === 'lens' || page.targets.some(t => t[2] === 'lens');
-    return { targets, secret, hasLens, title: `やねうらべや　ページ ${n + 1}　${['ゆうぐれ', 'マジックアワー', 'まよなか'][page.act]}` };
+    return { targets, secret, hasLens, title: ['第一の幕　西日の さす ころ', '第二の幕　ランプが ともる ころ', '第三の幕　月かげの ざわめく ころ'][page.act] };
   }
 
   // =================================================================

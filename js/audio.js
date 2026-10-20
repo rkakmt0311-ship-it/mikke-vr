@@ -1,27 +1,74 @@
 // 音：Web Audio でその場で合成（音源ファイル不要）。BGMだけ audio/ フォルダのファイルを読み込む
+// 方針（docs/title-and-sound-gemini.md）：
+//  ・全部の音を「古い木造の屋根裏」の残響（自作インパルス応答）に通す
+//  ・物音はサイン波ではなく、ノイズをフィルターで削り出して作る（紙・木・真鍮）
+//  ・鳴らすたびに、フィルター・音量・立ち上がり・音程を少しずつ揺らす（同じ音が二度と鳴らない）
+//  ・音階は D マイナー・ペンタトニック。わずかに音程を狂わせて、骨董のオルゴールらしく
 import * as THREE from 'three';
 
-let ctx = null, master, sfxBus, bgmBus, ambBus, noiseBuf;
+let ctx = null, master, reverb, buses = {}, noiseBuf, pinkBuf, brownBuf;
 const listenerPos = new THREE.Vector3(), fwd = new THREE.Vector3(), up = new THREE.Vector3();
+const VOL_KEY = 'mikke-volume-v1';
+const vols = Object.assign({ world: 0.8, sfx: 0.85, music: 0.7 }, (() => { try { return JSON.parse(localStorage.getItem(VOL_KEY) || '{}'); } catch (e) { return {}; } })());
 
-// ペンタトニック（ドレミソラ）。どこを叩いても濁りにくい
-const PENTA = [0, 2, 4, 7, 9];
-export function pentaFreq(i, base = 523.25) { // base = C5
+// ---------- 揺らぎ ----------
+const rnd = (a, b) => a + Math.random() * (b - a);
+const vary = (v, pct) => v * (1 + rnd(-pct, pct));             // ±pct
+const db = (d) => Math.pow(10, d / 20);
+const jitterDb = (g, d = 2.5) => g * db(rnd(-d, d));           // 音量 ±2.5dB
+
+// ---------- 音階：D マイナー・ペンタトニック（D F G A C） ----------
+const PENTA = [0, 3, 5, 7, 10];
+export function pentaFreq(i, base = 587.33) { // base = D5
   const oct = Math.floor(i / 5), deg = PENTA[((i % 5) + 5) % 5];
   return base * Math.pow(2, oct + deg / 12);
 }
 
+// ---------- 起動 ----------
+function makeNoise(kind) {
+  const len = ctx.sampleRate * 3, b = ctx.createBuffer(1, len, ctx.sampleRate), d = b.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0, last = 0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    if (kind === 'white') d[i] = w;
+    else if (kind === 'pink') { b0 = 0.997 * b0 + w * 0.029591; b1 = 0.985 * b1 + w * 0.032534; b2 = 0.95 * b2 + w * 0.048056; d[i] = (b0 + b1 + b2 + w * 0.05) * 2.2; }
+    else { last = (last + 0.02 * w) / 1.02; d[i] = last * 3.5; }   // ブラウン（1/f²）
+  }
+  return b;
+}
+// 古い木造の部屋の残響：2.2秒、指数減衰（^3.5）、木が高い音を吸う（2500Hzローパス相当）
+function makeImpulse(seconds = 2.2) {
+  const rate = ctx.sampleRate, len = Math.floor(rate * seconds), ir = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch); let lp = 0; const a = Math.exp(-2 * Math.PI * 2500 / rate);
+    for (let i = 0; i < len; i++) { const t = i / len, w = (Math.random() * 2 - 1) * Math.pow(1 - t, 3.5); lp = lp * a + w * (1 - a); d[i] = lp * (i < rate * 0.012 ? i / (rate * 0.012) : 1); }
+  }
+  return ir;
+}
 export function initAudio() {
   if (ctx) { ctx.resume(); return; }
   ctx = new (window.AudioContext || window.webkitAudioContext)();
-  master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
-  sfxBus = ctx.createGain(); sfxBus.connect(master);
-  bgmBus = ctx.createGain(); bgmBus.gain.value = 0.45; bgmBus.connect(master);
-  ambBus = ctx.createGain(); ambBus.gain.value = 1; ambBus.connect(master);
-  noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
-  const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  master = ctx.createGain(); master.gain.value = 0.95;
+  const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 3; comp.attack.value = 0.01; comp.release.value = 0.25;
+  master.connect(comp); comp.connect(ctx.destination);
+  reverb = ctx.createConvolver(); reverb.buffer = makeImpulse(2.2); const rvOut = ctx.createGain(); rvOut.gain.value = 0.9; reverb.connect(rvOut); rvOut.connect(master);
+  // バス：world（環境音）・sfx（物音）・ui（発見音）・music（音楽）。それぞれ残響へ送る量が違う
+  const wet = { world: 0.6, sfx: 0.35, ui: 0.5, music: 0.45, shimmer: 0.95 };
+  for (const name of Object.keys(wet)) {
+    const g = ctx.createGain(), send = ctx.createGain(); send.gain.value = wet[name];
+    g.connect(master); g.connect(send); send.connect(reverb); buses[name] = g;
+  }
+  noiseBuf = makeNoise('white'); pinkBuf = makeNoise('pink'); brownBuf = makeNoise('brown');
+  applyVolumes();
 }
 export const audioReady = () => !!ctx;
+function applyVolumes() {
+  if (!ctx) return;
+  buses.world.gain.value = vols.world; buses.sfx.gain.value = vols.sfx; buses.ui.gain.value = vols.sfx; buses.shimmer.gain.value = vols.sfx * 0.6;
+  buses.music.gain.value = vols.music;
+}
+export function getVolumes() { return { ...vols }; }
+export function setVolume(name, v) { vols[name] = v; try { localStorage.setItem(VOL_KEY, JSON.stringify(vols)); } catch (e) {} applyVolumes(); }
 
 export function updateListener(camera) {
   if (!ctx) return;
@@ -35,108 +82,146 @@ export function updateListener(camera) {
   } else { L.setPosition(listenerPos.x, listenerPos.y, listenerPos.z); L.setOrientation(fwd.x, fwd.y, fwd.z, up.x, up.y, up.z); }
 }
 
-// 出力先：位置があれば立体音響
-function out(pos, bus = sfxBus) {
-  if (!pos) return bus;
-  const p = ctx.createPanner(); p.panningModel = 'HRTF'; p.distanceModel = 'inverse'; p.refDistance = 0.8; p.rolloffFactor = 1.2;
+// ---------- 部品 ----------
+function out(pos, bus = 'sfx') {
+  const b = buses[bus] || buses.sfx; if (!pos) return b;
+  const p = ctx.createPanner(); p.panningModel = 'HRTF'; p.distanceModel = 'inverse'; p.refDistance = 0.8; p.rolloffFactor = 1.1;
   if (p.positionX) { p.positionX.value = pos.x; p.positionY.value = pos.y; p.positionZ.value = pos.z; } else p.setPosition(pos.x, pos.y, pos.z);
-  p.connect(bus); return p;
+  p.connect(b); return p;
 }
-function env(g, t, a, peak, dec, sustain = 0.0001) {
-  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(sustain, t + a + dec);
+function env(g, t, a, peak, dec) {
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + a + dec);
 }
-function tone(freq, { type = 'sine', a = 0.005, dec = 1, peak = 0.3, pos, when = 0, detune = 0, dest } = {}) {
-  const t = ctx.currentTime + when, o = ctx.createOscillator(), g = ctx.createGain();
-  o.type = type; o.frequency.value = freq; o.detune.value = detune;
-  env(g, t, a, peak, dec); o.connect(g); g.connect(dest || out(pos)); o.start(t); o.stop(t + a + dec + 0.05);
+// 音の芯：2つの音を±セントずらして重ね、うねりを出す
+function tone(freq, { type = 'sine', a = 0.005, dec = 1, peak = 0.3, pos, when = 0, detune = 0, bus = 'sfx', cents = 8, lp = 0, pair = 0 } = {}) {
+  const t = ctx.currentTime + when + rnd(0, 0.004), g = ctx.createGain(); let node = g;
+  if (lp) { const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = vary(lp, 0.1); g.connect(f); node = f; }
+  const make = (dt) => { const o = ctx.createOscillator(); o.type = type; o.frequency.value = freq; o.detune.value = detune + dt; o.connect(g); o.start(t); o.stop(t + a + dec + 0.05); };
+  make(rnd(-cents, cents)); if (pair) make(pair);
+  env(g, t, Math.max(0.002, vary(a, 0.15)), jitterDb(peak), vary(dec, 0.08)); node.connect(out(pos, bus));
 }
-function noise({ dec = 0.5, peak = 0.3, type = 'highpass', freq = 4000, q = 0.7, pos, when = 0, dest } = {}) {
+function noise({ dec = 0.5, peak = 0.3, type = 'highpass', freq = 4000, q = 0.7, pos, when = 0, a = 0.003, buf = 'white', bus = 'sfx', sweep = 0 } = {}) {
   const t = ctx.currentTime + when, s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-  s.buffer = noiseBuf; s.loop = true; f.type = type; f.frequency.value = freq; f.Q.value = q;
-  env(g, t, 0.003, peak, dec); s.connect(f); f.connect(g); g.connect(dest || out(pos)); s.start(t, Math.random()); s.stop(t + dec + 0.1);
+  s.buffer = buf === 'pink' ? pinkBuf : buf === 'brown' ? brownBuf : noiseBuf; s.loop = true;
+  f.type = type; f.frequency.setValueAtTime(vary(freq, 0.15), t); if (sweep) f.frequency.exponentialRampToValueAtTime(Math.max(40, vary(freq, 0.15) * sweep), t + a + dec); f.Q.value = q;
+  env(g, t, Math.max(0.002, a + rnd(-0.015, 0.015) * (a > 0.02 ? 1 : 0)), jitterDb(peak), vary(dec, 0.1));
+  s.connect(f); f.connect(g); g.connect(out(pos, bus)); s.start(t, Math.random() * 2); s.stop(t + a + dec + 0.1);
+}
+// 低く落ちる「ドン・コトッ」（木の重み）
+function thumpAt(pos, when = 0, peak = 0.35, bus = 'sfx') {
+  const t = ctx.currentTime + when, o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(vary(110, 0.1), t); o.frequency.exponentialRampToValueAtTime(45, t + 0.08);
+  env(g, t, 0.002, jitterDb(peak), 0.22); o.connect(g); g.connect(out(pos, bus)); o.start(t); o.stop(t + 0.35);
+  noise({ dec: 0.05, peak: peak * 0.4, type: 'lowpass', freq: 900, pos, when, bus });
+}
+// 真鍮：1 : 2.76 : 5.4 の金属の倍音
+function brassAt(freq, pos, when = 0, peak = 0.12, dec = 1.2, bus = 'sfx') {
+  [[1, 1], [2.76, 0.5], [5.4, 0.25]].forEach(([r, k]) => tone(freq * r, { dec: dec / r * 1.3, peak: peak * k, pos, when, bus, cents: 3 }));
+  noise({ dec: 0.012, peak: peak * 0.6, type: 'bandpass', freq: freq * 6, q: 2, pos, when, bus });
+}
+// カリンバ／オルゴールの爪弾き：三角波＋2倍音15%＋最初の15msの「爪の音」
+function pluck(freq, { pos, when = 0, peak = 0.16, dec = 1.6, bus = 'ui' } = {}) {
+  tone(freq, { type: 'triangle', dec, peak, pos, when, bus, cents: 8, lp: 3800 });
+  tone(freq * 2, { dec: dec * 0.6, peak: peak * 0.15, pos, when, bus, cents: 8 });
+  noise({ dec: 0.015, peak: peak * 0.5, type: 'highpass', freq: 5200, pos, when, bus });
 }
 
 // ---------- 楽器 ----------
 export const sfx = {
-  toyPiano(i, pos) { if (!ctx) return; const f = pentaFreq(i, 523.25 / 2);
-    tone(f, { type: 'triangle', dec: 1.2, peak: 0.28, pos }); tone(f * 4.02, { dec: 0.25, peak: 0.06, pos }); tone(f * 2, { dec: 0.6, peak: 0.08, pos, detune: 6 }); },
-  // 本物のピアノ風（MIDIノート番号）。倍音を重ねて、ゆっくり減衰
-  piano(midi, pos) { if (!ctx) return; const f = 440 * Math.pow(2, (midi - 69) / 12), dec = 1.2 + (108 - midi) / 30;
-    tone(f, { type: 'triangle', a: 0.004, dec, peak: 0.22, pos }); tone(f * 2, { a: 0.004, dec: dec * 0.6, peak: 0.08, pos, detune: 3 });
-    tone(f * 3, { a: 0.003, dec: dec * 0.3, peak: 0.03, pos }); noise({ dec: 0.03, peak: 0.03, type: 'bandpass', freq: Math.min(6000, f * 4), q: 1, pos }); },
-  xylophone(i, pos) { if (!ctx) return; const f = pentaFreq(i, 523.25);
-    tone(f, { dec: 0.45, peak: 0.35, pos }); tone(f * 3.93, { dec: 0.12, peak: 0.1, pos }); noise({ dec: 0.02, peak: 0.05, freq: 2000, pos }); },
-  musicBoxNote(i, pos, when = 0, vol = 1) { if (!ctx) return; const f = pentaFreq(i, 1046.5);
-    tone(f, { dec: 1.6, peak: 0.16 * vol, pos, when }); tone(f * 2.76, { dec: 0.3, peak: 0.04 * vol, pos, when }); },
-  cymbal(pos, when = 0) { if (!ctx) return; noise({ dec: 1.1, peak: 0.22, freq: 6000, pos, when }); noise({ dec: 0.25, peak: 0.12, type: 'bandpass', freq: 3200, q: 2, pos, when }); },
-  drum(pos) { if (!ctx) return; const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
-    o.frequency.setValueAtTime(160, t); o.frequency.exponentialRampToValueAtTime(48, t + 0.25);
-    env(g, t, 0.003, 0.6, 0.45); o.connect(g); g.connect(out(pos)); o.start(t); o.stop(t + 0.5);
-    noise({ dec: 0.06, peak: 0.12, type: 'lowpass', freq: 1500, pos }); },
-  boxCreak(pos, open = true) { if (!ctx) return; const t = ctx.currentTime, o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    o.type = 'sawtooth'; o.frequency.setValueAtTime(open ? 90 : 140, t); o.frequency.linearRampToValueAtTime(open ? 140 : 80, t + 0.5);
-    f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 6; env(g, t, 0.05, 0.06, 0.5);
-    o.connect(f); f.connect(g); g.connect(out(pos)); o.start(t); o.stop(t + 0.7);
-    noise({ dec: 0.08, peak: 0.15, type: 'lowpass', freq: 600, pos, when: open ? 0.5 : 0.55 }); },
-  spring(pos) { if (!ctx) return; const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
-    o.type = 'triangle'; o.frequency.setValueAtTime(200, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.15); o.frequency.exponentialRampToValueAtTime(300, t + 0.5);
-    env(g, t, 0.005, 0.2, 0.6); o.connect(g); g.connect(out(pos)); o.start(t); o.stop(t + 0.7); },
-  click(pos) { if (!ctx) return; noise({ dec: 0.03, peak: 0.2, type: 'bandpass', freq: 2500, q: 3, pos }); },
+  piano(midi, pos) { if (!ctx) return; const f = 440 * Math.pow(2, (midi - 69) / 12), dec = 1.4 + (108 - midi) / 28;
+    tone(f, { type: 'triangle', a: 0.004, dec, peak: 0.2, pos, cents: 4, pair: rnd(5, 8), lp: 2600 }); tone(f * 2, { a: 0.004, dec: dec * 0.55, peak: 0.06, pos, cents: 4 });
+    tone(f * 3.01, { a: 0.003, dec: dec * 0.25, peak: 0.025, pos }); thumpAt(pos, 0, 0.04); noise({ dec: 0.03, peak: 0.03, type: 'bandpass', freq: Math.min(6000, f * 4), q: 1, pos }); },
+  toyPiano(i, pos) { if (!ctx) return; const f = pentaFreq(i, 293.66); brassAt(f * 2, pos, 0, 0.06, 0.8); tone(f, { type: 'triangle', dec: 1.1, peak: 0.2, pos, lp: 3000 }); },
+  xylophone(i, pos) { if (!ctx) return; const f = pentaFreq(i, 587.33);
+    tone(f, { dec: 0.45, peak: 0.3, pos, cents: 5 }); tone(f * 3.93, { dec: 0.1, peak: 0.08, pos }); thumpAt(pos, 0, 0.05); noise({ dec: 0.02, peak: 0.06, type: 'bandpass', freq: 2200, pos }); },
+  musicBoxNote(i, pos, when = 0, vol = 1) { if (!ctx) return; pluck(pentaFreq(i, 1174.66), { pos, when: when + rnd(0.02, 0.14) * (when > 0 ? 1 : 0), peak: 0.13 * vol, dec: 1.8, bus: pos ? 'sfx' : 'music' }); },
+  cymbal(pos, when = 0) { if (!ctx) return; noise({ dec: 1.2, peak: 0.2, freq: 6000, pos, when }); brassAt(420, pos, when, 0.05, 1.4); },
+  drum(pos) { if (!ctx) return; thumpAt(pos, 0, 0.6); noise({ dec: 0.12, peak: 0.12, type: 'lowpass', freq: 1200, pos, buf: 'pink' }); },
+  boxCreak(pos, open = true) { if (!ctx) return; sfx.creak(pos); thumpAt(pos, open ? 0.55 : 0.5, 0.25); },
+  spring(pos) { if (!ctx) return; const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain(), f = ctx.createBiquadFilter();
+    o.type = 'sawtooth'; o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(700, t + 0.12); o.frequency.exponentialRampToValueAtTime(220, t + 0.6);
+    f.type = 'bandpass'; f.frequency.value = 1400; f.Q.value = 3; env(g, t, 0.004, 0.15, 0.6); o.connect(f); f.connect(g); g.connect(out(pos)); o.start(t); o.stop(t + 0.7); thumpAt(pos, 0, 0.2); },
+  click(pos) { if (!ctx) return; noise({ dec: 0.025, peak: 0.18, type: 'bandpass', freq: 2600, q: 3, pos }); thumpAt(pos, 0, 0.05); },
+  // ---------- 発見 ----------
+  mikke(pos) { sfx.mikkeCombo(0, pos); },
+  mikkeCombo(level, pos) { if (!ctx) return; const base = Math.min(level, 6) * 2, pats = [[0, 2, 4, 7], [0, 4, 5, 7], [0, 2, 5, 9], [2, 4, 7, 9]], pat = pats[Math.floor(Math.random() * pats.length)];
+    thumpAt(null, 0, 0.3, 'ui');                                                              // 0.1秒の「ドン」（ヒットストップと合わせる）
+    pat.forEach((n, k) => pluck(pentaFreq(n + base + 2, 587.33), { when: 0.1 + k * rnd(0.07, 0.1), peak: 0.15, dec: 1.6 }));
+    tone(pentaFreq(base + 2, 293.66), { dec: 2.4, peak: 0.05, when: 0.1, bus: 'shimmer', cents: 6, pair: 7 }); },
+  secret() { if (!ctx) return; [0, 4, 7, 9, 12, 14].forEach((n, k) => { pluck(pentaFreq(n, 587.33), { when: k * rnd(0.11, 0.16), peak: 0.13, dec: 2.4 }); });
+    tone(146.83, { dec: 4, peak: 0.08, bus: 'shimmer', cents: 6, pair: 9, a: 0.4 }); },
+  clear() { if (!ctx) return; [0, 2, 4, 7, 4, 7, 9, 12].forEach((n, k) => sfx.musicBoxNote(n, null, k * 0.2, 1.4)); tone(146.83, { dec: 5, peak: 0.07, bus: 'shimmer', a: 0.6, pair: 6 }); },
+  hint() { if (!ctx) return; noise({ dec: 0.9, peak: 0.06, type: 'bandpass', freq: 3000, q: 0.6, buf: 'pink', a: 0.3, sweep: 0.4, bus: 'shimmer' }); for (let k = 0; k < 5; k++) pluck(pentaFreq(12 - k, 587.33), { when: 0.4 + k * 0.09, peak: 0.05, dec: 1 }); },
+  // ---------- UI（紙・木・真鍮の物音） ----------
+  ui() { if (!ctx) return; sfx.paper(null, 0.5); },
+  paper(pos, vol = 1) { if (!ctx) return; noise({ a: 0.15, dec: 0.2, peak: 0.1 * vol, type: 'bandpass', freq: 1200, q: 1.5, buf: 'pink', pos, bus: pos ? 'sfx' : 'ui' }); },
+  book() { if (!ctx) return; sfx.latch(); noise({ a: 0.3, dec: 0.5, peak: 0.12, type: 'bandpass', freq: 900, q: 1.2, buf: 'pink', when: 0.2 }); thumpAt(null, 0.85, 0.3, 'ui'); },
+  latch(pos) { if (!ctx) return; brassAt(2400, pos, 0, 0.06, 0.25, pos ? 'sfx' : 'ui'); },
+  match() { if (!ctx) return; noise({ a: 0.02, dec: 0.25, peak: 0.25, type: 'bandpass', freq: 3000, q: 0.8, sweep: 0.6, bus: 'ui' }); noise({ a: 0.08, dec: 0.9, peak: 0.12, type: 'lowpass', freq: 600, buf: 'brown', when: 0.18, bus: 'ui' }); },
+  blowOut() { if (!ctx) return; noise({ a: 0.05, dec: 0.45, peak: 0.12, type: 'bandpass', freq: 800, q: 0.5, buf: 'pink', sweep: 0.5, bus: 'ui' }); },
+  tick(pos, high) { if (!ctx) return; noise({ dec: 0.018, peak: 0.05, type: 'bandpass', freq: high ? 3200 : 2700, q: 6, pos }); },
   // ---------- 3Dならではの演出 ----------
-  // 見つけた音：続けて見つけるほど高くなる。毎回少しずつ違う（同じチャイムの繰り返しで耳障りにならないように）
-  mikkeCombo(level, pos) { if (!ctx) return; const base = Math.min(level, 6) * 2, pat = [[0, 2, 4, 7], [0, 4, 7, 9], [0, 2, 7, 9], [4, 7, 9, 12]][Math.floor(Math.random() * 4)];
-    tone(90, { type: 'sine', a: 0.002, dec: 0.18, peak: 0.25 });                              // 0.1秒の「ドン」（ヒットストップと合わせる）
-    noise({ dec: 0.08, peak: 0.08, type: 'bandpass', freq: 5000, q: 2 });
-    pat.forEach((n, k) => { tone(pentaFreq(n + base + 5, 523.25), { type: 'triangle', dec: 1.1, peak: 0.14, when: 0.1 + k * 0.075 }); tone(pentaFreq(n + base + 10, 523.25), { dec: 0.5, peak: 0.04, when: 0.1 + k * 0.075 }); }); },
-  whistle(when = 0) { if (!ctx) return; const t = ctx.currentTime + when, o = ctx.createOscillator(), o2 = ctx.createOscillator(), g = ctx.createGain(), f = ctx.createBiquadFilter();
-    o.type = o2.type = 'sawtooth'; o.frequency.setValueAtTime(740, t); o.frequency.linearRampToValueAtTime(600, t + 2.2); o2.frequency.setValueAtTime(932, t); o2.frequency.linearRampToValueAtTime(760, t + 2.2);   // 通り過ぎると音が下がる
-    f.type = 'bandpass'; f.frequency.value = 1400; f.Q.value = 1.5; env(g, t, 0.15, 0.1, 2.2);
-    o.connect(f); o2.connect(f); f.connect(g); g.connect(sfxBus); o.start(t); o2.start(t); o.stop(t + 2.5); o2.stop(t + 2.5); },
-  chug(n = 10, pos) { if (!ctx) return; for (let i = 0; i < n; i++) noise({ dec: 0.12, peak: 0.12 * (1 - Math.abs(i - n / 2) / n), type: 'lowpass', freq: 500, pos, when: i * 0.22 }); },
-  groan(pos) { if (!ctx) return; const t = ctx.currentTime, o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    o.type = 'sawtooth'; o.frequency.setValueAtTime(55, t); o.frequency.linearRampToValueAtTime(80, t + 2.4); f.type = 'bandpass'; f.frequency.value = 600; f.Q.value = 9;
-    env(g, t, 0.4, 0.08, 2.2); o.connect(f); f.connect(g); g.connect(out(pos)); o.start(t); o.stop(t + 2.8); },
-  creak(pos) { if (!ctx) return; const t = ctx.currentTime, o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    o.type = 'sawtooth'; o.frequency.setValueAtTime(110, t); o.frequency.linearRampToValueAtTime(70, t + 0.8); f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 10;
-    env(g, t, 0.08, 0.05, 0.8); o.connect(f); f.connect(g); g.connect(out(pos)); o.start(t); o.stop(t + 1); },
-  steps(pos, n = 3) { if (!ctx) return; for (let i = 0; i < n; i++) { noise({ dec: 0.09, peak: 0.07, type: 'lowpass', freq: 380, pos, when: i * 0.7 }); tone(70, { dec: 0.1, peak: 0.05, pos, when: i * 0.7 }); } },
-  projector(pos) { if (!ctx) return; for (let i = 0; i < 16; i++) noise({ dec: 0.03, peak: 0.035, type: 'bandpass', freq: 2200, q: 4, pos, when: i * 0.09 }); },
-  shimmer() { if (!ctx) return; for (let k = 0; k < 10; k++) tone(pentaFreq(10 + (k * 3) % 7, 1046.5), { dec: 1.2, peak: 0.03, when: k * 0.09 }); },
-  pages(pos) { if (!ctx) return; for (let i = 0; i < 14; i++) noise({ dec: 0.04, peak: 0.06, type: 'bandpass', freq: 2600, q: 1, pos, when: i * 0.05 }); },
-  wave(pos) { if (!ctx) return; noise({ dec: 1.6, peak: 0.25, type: 'lowpass', freq: 1200, pos }); noise({ dec: 0.9, peak: 0.12, type: 'highpass', freq: 3000, pos, when: 0.2 }); },
-  lens(on) { if (!ctx) return; noise({ dec: 0.03, peak: 0.15, type: 'bandpass', freq: 3200, q: 3 }); if (on) tone(1568, { dec: 0.6, peak: 0.05, when: 0.04 }); },
-  // ---------- 演出 ----------
-  mikke(pos) { if (!ctx) return; [0, 2, 4, 5, 7].forEach((n, k) => { tone(pentaFreq(n + 5, 523.25), { type: 'triangle', dec: 0.9, peak: 0.16, when: k * 0.07 }); });
-    noise({ dec: 0.6, peak: 0.04, freq: 8000 }); },
-  secret() { if (!ctx) return; [0, 4, 7, 9, 12, 14].forEach((n, k) => { tone(pentaFreq(n, 523.25), { dec: 2.2, peak: 0.12, when: k * 0.12 }); tone(pentaFreq(n, 523.25) * 2, { dec: 1, peak: 0.04, when: k * 0.12 }); }); },
-  clear() { if (!ctx) return; [0, 2, 4, 7, 4, 7, 9, 12].forEach((n, k) => sfx.musicBoxNote(n, null, k * 0.18, 1.6)); },
-  hint() { if (!ctx) return; const t = ctx.currentTime; for (let k = 0; k < 6; k++) tone(pentaFreq(10 - k, 523.25), { dec: 0.5, peak: 0.05, when: k * 0.05 }); },
-  ui() { if (!ctx) return; tone(880, { dec: 0.12, peak: 0.08 }); },
-  book() { if (!ctx) return; noise({ dec: 0.35, peak: 0.12, type: 'bandpass', freq: 1800, q: 0.8 }); noise({ dec: 0.25, peak: 0.08, type: 'bandpass', freq: 3000, q: 1, when: 0.15 }); },
-  tick(pos, high) { if (!ctx) return; tone(high ? 2400 : 2000, { dec: 0.03, peak: 0.03, pos }); },
+  whistle(when = 0) { if (!ctx) return; const t = ctx.currentTime + when, g = ctx.createGain(), f = ctx.createBiquadFilter();
+    [740, 932].forEach(fr => { const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(fr, t); o.frequency.linearRampToValueAtTime(fr * 0.81, t + 2.2); o.connect(f); o.start(t); o.stop(t + 2.5); });   // 通り過ぎると音が下がる
+    f.type = 'bandpass'; f.frequency.value = 1400; f.Q.value = 1.5; env(g, t, 0.15, 0.08, 2.2); f.connect(g); g.connect(buses.sfx);
+    noise({ a: 0.2, dec: 2, peak: 0.05, type: 'bandpass', freq: 2000, q: 0.7, when }); },
+  chug(n = 10, pos) { if (!ctx) return; for (let i = 0; i < n; i++) noise({ dec: 0.12, peak: 0.12 * (1 - Math.abs(i - n / 2) / n), type: 'lowpass', freq: 500, buf: 'pink', pos, when: i * rnd(0.2, 0.24) }); },
+  groan(pos) { if (!ctx) return; for (let i = 0; i < 9; i++) noise({ a: 0.02, dec: 0.12, peak: 0.08, type: 'bandpass', freq: vary(380, 0.2), q: 8, pos, when: i * rnd(0.18, 0.3) }); thumpAt(pos, 2.4, 0.2); },
+  creak(pos) { if (!ctx) return; const n = 3 + Math.floor(Math.random() * 4); for (let i = 0; i < n; i++) noise({ a: 0.01, dec: 0.06, peak: 0.07, type: 'bandpass', freq: vary(400, 0.25), q: 9, pos, when: i * rnd(0.06, 0.14), bus: 'world' }); },
+  steps(pos, n = 3) { if (!ctx) return; for (let i = 0; i < n; i++) thumpAt(pos, i * rnd(0.6, 0.8), 0.12, 'world'); },
+  projector(pos) { if (!ctx) return; for (let i = 0; i < 18; i++) noise({ dec: 0.025, peak: 0.035, type: 'bandpass', freq: 2200, q: 4, pos, when: i * 0.085 }); },
+  shimmer() { if (!ctx) return; for (let k = 0; k < 10; k++) pluck(pentaFreq(10 + (k * 3) % 7, 1174.66), { when: k * rnd(0.07, 0.12), peak: 0.03, dec: 1.4, bus: 'shimmer' }); },
+  pages(pos) { if (!ctx) return; for (let i = 0; i < 12; i++) noise({ a: 0.02, dec: 0.05, peak: 0.06, type: 'bandpass', freq: 1800, q: 1, buf: 'pink', pos, when: i * rnd(0.04, 0.07) }); },
+  wave(pos) { if (!ctx) return; noise({ a: 0.3, dec: 1.6, peak: 0.22, type: 'lowpass', freq: 1200, buf: 'pink', pos, sweep: 0.5 }); noise({ a: 0.1, dec: 0.9, peak: 0.1, type: 'highpass', freq: 3000, pos, when: 0.3 }); },
+  lens(on) { if (!ctx) return; brassAt(1800, null, 0, 0.05, 0.3, 'ui'); if (on) noise({ a: 0.2, dec: 0.6, peak: 0.03, type: 'bandpass', freq: 4000, q: 1, bus: 'shimmer', when: 0.05 }); },
 };
 
-// ---------- 環境音とBGM ----------
+// ---------- 環境音（部屋の空気）とBGM ----------
 let ambNodes = [], bgmSrc = null, ambTimer = null;
 export function stopAmbience() {
   ambNodes.forEach(n => { try { n.stop(); } catch (e) {} }); ambNodes = [];
-  if (ambTimer) clearInterval(ambTimer); ambTimer = null;
+  if (ambTimer) clearTimeout(ambTimer); ambTimer = null;
   if (bgmSrc) { try { bgmSrc.stop(); } catch (e) {} bgmSrc = null; }
+  stopTheme();
 }
-// 部屋の空気感：低いノイズ＋時々遠くの小さな物音（驚かせない音量）
-export function startAmbience({ roomTone = 0.03, lowpass = 300, events = [] } = {}) {
+// ブラウンノイズ → ローパス（180〜320Hz, Q4）を 0.08Hz でゆっくり揺らす ＝ 隙間風の息づかい
+export function startAmbience({ roomTone = 0.03, lowpass = 260, events = [] } = {}) {
   if (!ctx) return; stopAmbience();
-  const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-  s.buffer = noiseBuf; s.loop = true; f.type = 'lowpass'; f.frequency.value = lowpass; g.gain.value = roomTone;
-  s.connect(f); f.connect(g); g.connect(ambBus); s.start(); ambNodes.push(s);
-  if (events.length) ambTimer = setInterval(() => { if (Math.random() < 0.25) events[Math.floor(Math.random() * events.length)](); }, 5000);
+  const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain(), lfo = ctx.createOscillator(), lfoG = ctx.createGain();
+  s.buffer = brownBuf; s.loop = true; f.type = 'lowpass'; f.frequency.value = lowpass; f.Q.value = 4; g.gain.value = Math.min(0.06, roomTone * 1.2);
+  lfo.frequency.value = 0.08; lfoG.gain.value = 70; lfo.connect(lfoG); lfoG.connect(f.frequency);
+  s.connect(f); f.connect(g); g.connect(buses.world); s.start(); lfo.start(); ambNodes.push(s, lfo);
+  const next = () => { ambTimer = setTimeout(() => { if (events.length) events[Math.floor(Math.random() * events.length)](); next(); }, rnd(15000, 40000)); };   // 15〜40秒に1回
+  next();
 }
+const somewhere = () => new THREE.Vector3(rnd(-3, 3), rnd(1.5, 4.5), rnd(-3, 3));
 export const ambientEvents = {
-  creak: () => { const t = ctx.currentTime, o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    o.type = 'sawtooth'; o.frequency.setValueAtTime(70, t); o.frequency.linearRampToValueAtTime(95, t + 1.2); f.type = 'bandpass'; f.frequency.value = 700; f.Q.value = 8;
-    env(g, t, 0.3, 0.012, 1.2); o.connect(f); f.connect(g); g.connect(out(new THREE.Vector3((Math.random() - 0.5) * 8, 3, (Math.random() - 0.5) * 8), ambBus)); o.start(t); o.stop(t + 1.8); },
-  chime: () => { const n = Math.floor(Math.random() * 10); tone(pentaFreq(n, 1046.5), { dec: 2.5, peak: 0.02, dest: out(new THREE.Vector3((Math.random() - 0.5) * 8, 2, (Math.random() - 0.5) * 8), ambBus) }); },
+  creak: () => sfx.creak(somewhere()),
+  chime: () => pluck(pentaFreq(Math.floor(rnd(5, 12)), 1174.66), { pos: somewhere(), peak: 0.02, dec: 2.5, bus: 'world' }),
 };
+
+// ---------- タイトルの主題（少し調子の外れた古いオルゴール） ----------
+// LIMBO方式：表＝±6セントずらした2音のうねり（1800Hzのローパス）、裏＝1オクターブ下を深い残響だけで鳴らす影
+const THEME = [[4, 1], [5, 0.5], [4, 0.5], [2, 1], [0, 1], [2, 0.5], [4, 1.5], [-1, 1], [7, 1], [5, 0.5], [4, 0.5], [2, 1], [4, 1], [0, 1], [-1, 2], [-1, 1]];
+let themeTimer = null, themeOn = false;
+export function playTheme(loop = true) {
+  if (!ctx || themeOn) return; themeOn = true;
+  const play = () => {
+    if (!themeOn) return; let w = 0.2;
+    THEME.forEach(([n, len]) => {
+      if (n >= 0) {
+        const f = pentaFreq(n, 1174.66);
+        tone(f, { type: 'triangle', dec: 2.2, peak: 0.09, when: w, bus: 'music', cents: 2, pair: 6, detune: -6, lp: 1800 });
+        noise({ dec: 0.012, peak: 0.04, type: 'highpass', freq: 5200, when: w, bus: 'music' });
+        tone(f / 2, { a: 1.5, dec: 4, peak: 0.025, when: w, bus: 'shimmer', cents: 6 });
+      }
+      w += len * 0.42 + rnd(0.02, 0.14);   // 1音ごとの「ため」（ゼンマイの緩み）
+    });
+    if (loop) themeTimer = setTimeout(play, (w + 3) * 1000);
+  };
+  play();
+}
+export function stopTheme() { themeOn = false; if (themeTimer) clearTimeout(themeTimer); themeTimer = null; }
 
 // BGM：audio/bgm_<name>.mp3 があれば流す（なければ静かに何もしない）
 const bgmCache = {};
@@ -146,12 +231,13 @@ export async function playBgm(name) {
     if (!(name in bgmCache)) {
       bgmCache[name] = null;
       for (const ext of ['mp3', 'ogg', 'm4a', 'wav']) {
-        const r = await fetch(`audio/bgm_${name}.${ext}`);
-        if (r.ok) { bgmCache[name] = await ctx.decodeAudioData(await r.arrayBuffer()); break; }
+        const r = await fetch(`audio/bgm_${name}.${ext}`, { method: 'HEAD' });
+        if (r.ok) { const r2 = await fetch(`audio/bgm_${name}.${ext}`); bgmCache[name] = await ctx.decodeAudioData(await r2.arrayBuffer()); break; }
       }
     }
-    const buf = bgmCache[name]; if (!buf) return;
+    const buf = bgmCache[name]; if (!buf) return false;
     if (bgmSrc) { try { bgmSrc.stop(); } catch (e) {} }
-    bgmSrc = ctx.createBufferSource(); bgmSrc.buffer = buf; bgmSrc.loop = true; bgmSrc.connect(bgmBus); bgmSrc.start();
-  } catch (e) { /* BGMなしで続行 */ }
+    bgmSrc = ctx.createBufferSource(); bgmSrc.buffer = buf; bgmSrc.loop = true; bgmSrc.connect(buses.music); bgmSrc.start();
+    return true;
+  } catch (e) { return false; }
 }

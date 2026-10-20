@@ -4,8 +4,8 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { StereoEffect } from 'three/addons/effects/StereoEffect.js';
 import { Player } from './player.js';
 import { V, noRay, disposeTree } from './util.js';
-import { initAudio, sfx, updateListener, startAmbience, stopAmbience, ambientEvents, playBgm } from './audio.js';
-import { Panel, drawList, textSprite, button3d, makeReticle, makeVignette, fmtTime } from './ui3d.js';
+import { initAudio, sfx, updateListener, startAmbience, stopAmbience, ambientEvents, playBgm, playTheme, stopTheme, setVolume, getVolumes } from './audio.js';
+import { Panel, drawList, textSprite, button3d, makeReticle, makeVignette, fmtTime, kanjiNum } from './ui3d.js';
 import { createHub, BOOKS } from './stages/hub.js';
 import { createAttic } from './stages/attic.js';
 import { loadManifest } from './assets.js';
@@ -102,27 +102,42 @@ function goHub() {
   enterPlace(hub);
   renderList(); hide3dMenu(); hideMenu();
 }
-function startPage(stageId, n) {
-  sfx.book();
-  showLoading(true);
-  setTimeout(() => {   // 読み込み表示を一瞬出してから重い処理
-    if (!stage || stage.id !== stageId) { stage = STAGES[stageId](game); enterPlace(stage); }
-    else player.placeAt(stage.spawn.pos, stage.spawn.yaw);
-    const info = stage.setPage(n);
-    page = { stageId, n, title: info.title, items: info.targets.map(t => ({ ...t, found: false })),
-      secret: { ...info.secret, found: false }, time: 0, hints: 0, cleared: false };
-    renderList(); hideMenu(); hide3dMenu();
-    toast(info.hasLens ? `ページ ${n + 1}：ルーペでしか みえない ものが あるみたい…` : `ページ ${n + 1}`, true);
-    combo = 0; lastFoundAt = -99;
-    showLoading(false);
-  }, 30);
+let turning = false;
+async function startPage(stageId, n) {
+  if (turning) return; turning = true;
+  hideMenu(); hide3dMenu();
+  if (current === hub) hub.blowOut(); else sfx.paper(null, 1.2);
+  await fade(1, 0.45);                                  // ろうそくが消えて、0.4秒の暗転
+  showLoading(true); await new Promise(r => setTimeout(r, 40));
+  if (!stage || stage.id !== stageId) { stage = STAGES[stageId](game); enterPlace(stage); }
+  else player.placeAt(stage.spawn.pos, stage.spawn.yaw);
+  const info = stage.setPage(n);
+  page = { stageId, n, title: info.title, items: info.targets.map(t => ({ ...t, found: false })),
+    secret: { ...info.secret, found: false }, time: 0, hints: 0, cleared: false };
+  renderList(); combo = 0; lastFoundAt = -99;
+  showLoading(false);
+  await fade(0, 1.4);                                   // 丸窓の光が、ゆっくり差しこむ
+  toast(info.title, true, info.hasLens ? '（ルーペでしか 見えない ものも あるらしい……）' : '');
+  turning = false;
+}
+// 暗転：PC・スマホは画面の幕、ゴーグルは顔のまわりの黒い球
+const fadeSphere = noRay(new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), new THREE.MeshBasicMaterial({ color: '#0d0a08', side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false })));
+fadeSphere.renderOrder = 1000; fadeSphere.visible = false; camera.add(fadeSphere);
+let fadeAnim = null, fadeLevel = 0;
+function fade(to, dur) { return new Promise(res => { fadeAnim = { from: fadeLevel, to, t: 0, dur, res }; }); }
+function updateFade(dt) {
+  if (!fadeAnim) return; const f = fadeAnim; f.t += dt; const k = Math.min(1, f.t / f.dur), e = k * k * (3 - 2 * k);
+  fadeLevel = f.from + (f.to - f.from) * e; const el = $('#fade'); el.style.transition = 'none'; el.style.opacity = fadeLevel;
+  fadeSphere.visible = fadeLevel > 0.001; fadeSphere.material.opacity = fadeLevel;
+  if (k >= 1) { fadeAnim = null; f.res(); }
 }
 function reloadCurrent() {
   if (page) { const s = page.stageId, n = page.n; stage = null; startPage(s, n); }
 }
 function openBook(b) {
-  if (!b.ready) { toast('この えほんは まだ ひらけないみたい…', true); sfx.ui(); return; }
-  sfx.book(); hub.showPages(b, records); toast('ページを えらんでね', true);
+  if (!b.ready) { toast('', true, 'この絵本は、まだ ひらかない。'); sfx.paper(); return; }
+  if (hub.isOpen) return;
+  hub.showPages(b, records); setTimeout(() => toast('', true, 'もくじから、ページを えらんでね。'), 1600);
 }
 function showLoading(on) { $('#loading').classList.toggle('show', on); }
 
@@ -153,6 +168,9 @@ function activate(hit, via = 'main') {
   // まちがいは何も起きない
 }
 const flying = [], floaters = [];
+const MURMURS = ['（……よく 見つけたね）', '（……そこに いたのか）', '（……目が 慣れてきたね）', '（……息を ひそめて いたのに）', '（……あと すこし）', '（……ほこりを かぶって いたね）'];
+let murmurI = Math.floor(Math.random() * MURMURS.length);
+const murmur = () => MURMURS[murmurI++ % MURMURS.length];
 // ご褒美の流れ（Vlambeer・Juice it or lose it を参考）：
 // 0〜100ms 世界が止まる（ヒットストップ）＋「ドン」 → 物が内側から光る → 光の粒がリストへ吸い込まれる → 音が解決する
 let combo = 0, lastFoundAt = -99, freezeUntil = 0;
@@ -163,8 +181,8 @@ function found(it, secret) {
   freezeUntil = performance.now() + 110;
   it.obj.traverse(o => { if (o.isMesh && o.material?.emissive) { o.material = o.material.clone(); o.material.emissive.set(secret ? '#ffd700' : '#ffcf70'); o.material.emissiveIntensity = 0; o.userData.glow = true; } });
   spawnBurst(wp, secret);
-  if (secret) { sfx.secret(); toast(`★ ひみつの ${it.name}！`); spawnFloater(`★ ${it.name}`, wp, '#ffd700'); }
-  else { sfx.mikkeCombo(combo, wp); toast(combo >= 2 ? `ミッケ！ ×${combo + 1}` : 'ミッケ！'); spawnFloater(combo >= 2 ? `ミッケ！×${combo + 1}` : 'ミッケ！', wp); }
+  if (secret) { sfx.secret(); toast('ひみつを ミッケ！', false, '（……だれにも 内緒だよ）'); spawnFloater('ひみつ', wp, '#e9b8a8'); }
+  else { sfx.mikkeCombo(combo, wp); toast('ミッケ！', false, combo >= 2 ? `（……${kanjiNum(combo + 1)}つ つづけて）` : murmur()); spawnFloater('ミッケ！', wp); }
   scene.attach(it.obj); flying.push({ obj: it.obj, t: -0.35, from: it.obj.position.clone(), s: it.obj.scale.x });
   renderList();
   if (!page.cleared && page.items.every(i => i.found)) {
@@ -172,8 +190,7 @@ function found(it, secret) {
     const key = `${page.stageId}-${page.n + 1}`, prev = records[key];
     const rec = { best: Math.min(prev?.best ?? Infinity, page.time), hints: prev ? Math.min(prev.hints, page.hints) : page.hints, secret: !!(prev?.secret || page.secret.found) };
     records[key] = rec; saveRecords();
-    setTimeout(() => { sfx.clear(); toast('ページ クリア！'); spawnFloater('ページ クリア！', camera.getWorldPosition(V()).add(camera.getWorldDirection(V()).multiplyScalar(1.5)), '#fff'); }, 900);
-    setTimeout(() => toast('このまま さんぽ できるよ（メニューで つぎの ページへ）', true), 3200);
+    setTimeout(() => { sfx.clear(); toast('すべて 見つけだしたね。', true, '夜が 明けるまで、好きなだけ 部屋を 歩いてごらん。'); }, 1200);
     renderList();
   } else if (secret && page.cleared) { const key = `${page.stageId}-${page.n + 1}`; records[key].secret = true; saveRecords(); }
 }
@@ -209,7 +226,7 @@ function spawnFloater(text, pos, color = '#fff') {
 let hintFx = null;
 function useHint() {
   if (!page || page.cleared) return;
-  if (page.hints >= HINTS) { toast('ヒントは もう ないよ', true); return; }
+  if (page.hints >= HINTS) { toast('', true, '光の つぶは、もう 残っていない。'); return; }
   const head = camera.getWorldPosition(V());
   const left = page.items.filter(i => !i.found).map(i => ({ i, d: i.obj.getWorldPosition(V()).distanceTo(head) })).sort((a, b) => a.d - b.d);
   if (!left.length) return;
@@ -219,7 +236,7 @@ function useHint() {
   const pts = new THREE.Points(g, new THREE.PointsMaterial({ color: '#ffe27a', size: 0.05, transparent: true, opacity: 1, depthTest: false, blending: THREE.AdditiveBlending, toneMapped: false }));
   pts.renderOrder = 990; fxRoot.add(pts);
   hintFx = { pts, t: 0, target: left[0].i.obj, N };
-  toast(`ヒント：ひかりの つぶを おいかけて（のこり ${HINTS - page.hints}）`, true);
+  toast('', true, `しっ……耳を すませて ごらん（光の つぶ あと ${kanjiNum(HINTS - page.hints)}つ）`);
 }
 function updateHint(dt) {
   if (!hintFx) return;
@@ -243,11 +260,13 @@ function listState() {
 let listVisible = true;
 function renderList() {
   const el = $('#list');
-  if (!page) { el.innerHTML = '<div class="t">えほんの へや</div><div class="s">つくえの えほんを えらんで、ページを ひらこう</div>'; el.hidden = !listVisible; draw3dList(); return; }
-  el.innerHTML = `<div class="t">${page.title}</div><div class="s">${fmtTime(page.time)}　ヒント のこり ${HINTS - page.hints}</div>` +
-    page.items.map(i => `<div class="it ${i.found ? 'done' : ''}">${i.found ? '✔' : '・'} ${i.name}</div>`).join('') +
-    `<div class="sec ${page.secret.found ? 'done' : ''}">★ ${page.secret.found ? page.secret.name : '？？？（ひみつ）'}</div>` +
-    (page.cleared ? '<div class="clear">ページ クリア！</div>' : '');
+  if (!page) { el.innerHTML = '<div class="t">絵本の 部屋</div><div class="lead">書見台の 絵本を ひらいて、<br>もくじから ページを えらんでね。</div>'; el.hidden = !listVisible; draw3dList(); return; }
+  const left = page.items.filter(i => !i.found).length;
+  el.innerHTML = `<div class="t">${page.title.split('　')[0]}</div><div class="left">${page.cleared ? '' : `あと ${kanjiNum(left)}つ`}</div>` +
+    `<div class="lead">${page.cleared ? 'すべて 見つけだしたね。' : 'この部屋の どこかに かくれているよ。'}</div>` +
+    page.items.map(i => `<div class="it ${i.found ? 'done' : ''}">${i.name}</div>`).join('') +
+    `<div class="sec ${page.secret.found ? 'done' : ''}">${page.secret.found ? `ひみつ：${page.secret.name}` : '……それから、リストにない ひみつが ひとつ。'}</div>` +
+    `<div class="time">${fmtTime(page.time)}</div>`;
   el.hidden = !listVisible;
   draw3dList();
 }
@@ -255,17 +274,19 @@ function renderList() {
 const list3d = new Panel(0.3, 0.36, 900); noRay(list3d.mesh);
 function draw3dList() {
   const st = listState();
-  if (!st) list3d.draw((c, w, h) => drawList(c, w, h, { title: 'えほんの へや', time: 0, hintsLeft: HINTS, items: [{ name: 'えほんを えらんでね', found: false }], secretFound: false }));
+  if (!st) list3d.draw((c, w, h) => drawList(c, w, h, { title: '絵本の 部屋', time: 0, hintsLeft: HINTS, items: [{ name: '書見台の 絵本を ひらこう', found: false }], secretFound: false }));
   else list3d.draw((c, w, h) => drawList(c, w, h, st));
 }
 let lastListSec = -1;
 
 // ---------- トースト ----------
 let toastTimer = null;
-function toast(text, small = false) {
-  const el = $('#toast'); el.textContent = text; el.classList.toggle('small', small); el.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), small ? 2600 : 1300);
-  if (mode === 'xr' || mode === 'phonevr') { if (small) spawnFloater(text, camera.getWorldPosition(V()).add(camera.getWorldDirection(V()).multiplyScalar(1.4)).add(V(0, -0.25, 0))); }
+function toast(text, small = false, sub = '') {
+  const el = $('#toast'); const line = small ? (sub || text) : sub;
+  el.querySelector('.big').textContent = small ? '' : text; el.querySelector('.murmur').textContent = small && sub && text ? `${text}　${sub}` : line;
+  el.classList.toggle('small', small); el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), small ? 3200 : 2000);
+  if ((mode === 'xr' || mode === 'phonevr') && small) spawnFloater(small && sub && text ? text : line, camera.getWorldPosition(V()).add(camera.getWorldDirection(V()).multiplyScalar(1.4)).add(V(0, -0.25, 0)));
 }
 
 // ---------- ルーペ（The Room の接眼レンズ）：かざすと、ふだん見えない物が見える ----------
@@ -276,7 +297,7 @@ function setLens(on) {
   $('#lens').hidden = !on || mode === 'xr' || mode === 'phonevr';
   renderer.domElement.style.filter = on && (mode === 'pc' || mode === 'phone') ? 'sepia(.25) saturate(1.15) contrast(1.05)' : '';
   lensRing.visible = on && (mode === 'xr' || mode === 'phonevr');
-  if (on) toast('ルーペ：みえない ものが みえるかも', true);
+  if (on) toast('', true, 'ルーペを のぞく……');
 }
 const toggleLens = () => setLens(!game.lens);
 
@@ -284,7 +305,8 @@ const toggleLens = () => setLens(!game.lens);
 function showMenu() {
   if (mode === 'xr' || mode === 'phonevr') { show3dMenu(); return; }
   const mp = $('#menu-pages'); mp.innerHTML = '';
-  if (page) for (let n = 0; n < 3; n++) { const b = document.createElement('button'); b.textContent = `ページ ${n + 1}${records[`${page.stageId}-${n + 1}`] ? ' ✔' : ''}`; b.onclick = () => startPage(page.stageId, n); mp.appendChild(b); }
+  if (page) BOOKS[0].acts.forEach((a, n) => { const [act, name] = a.split('　'), b = document.createElement('button');
+    b.innerHTML = `<span class="act">${act}</span>${name}${records[`${page.stageId}-${n + 1}`] ? '<span class="done">済</span>' : ''}`; b.onclick = () => startPage(page.stageId, n); mp.appendChild(b); });
   $('#menu').hidden = false;
 }
 function hideMenu() { $('#menu').hidden = true; }
@@ -293,18 +315,24 @@ $('#menu').addEventListener('click', e => {
   if (a === 'resume') { hideMenu(); if (mode === 'pc') player.lock(); }
   if (a === 'hub') { goHub(); if (mode === 'pc') player.lock(); }
   if (a === 'quit') location.reload();
+  if (a === 'settings') { hideMenu(); openSettings(true); }
 });
+let settingsFromMenu = false;
+function openSettings(fromMenu = false) { settingsFromMenu = fromMenu === true; const v = getVolumes(); $('#vol-world').value = v.world; $('#vol-sfx').value = v.sfx; $('#vol-music').value = v.music; $('#settings').hidden = false; sfx.paper(); }
+['world', 'sfx', 'music'].forEach(k => $(`#vol-${k}`).addEventListener('input', e => { setVolume(k, +e.target.value); if (k !== 'music') sfx.latch(); }));
+document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { $(`#${b.dataset.close}`).hidden = true; sfx.paper(); if (settingsFromMenu) showMenu(); });
+$('#btn-settings').onclick = openSettings;
 
 // ---------- メニュー（3D：Quest・スマホVR） ----------
 let menu3d = null;
 function show3dMenu() {
   hide3dMenu(); sfx.ui();
   menu3d = new THREE.Group();
-  const btns = [['つづける', hide3dMenu]];
-  if (page) for (let n = 0; n < 3; n++) btns.push([`ページ ${n + 1}`, () => startPage(page.stageId, n)]);
-  btns.push(['えほんの へやへ', goHub]);
-  btns.push([`がしつ：${{ ultra: '超高', high: '高', quest: 'Quest', mid: '中', low: '低' }[qualityName]}`, () => { setQuality({ ultra: 'high', high: 'quest', quest: 'mid', mid: 'low', low: 'high' }[qualityName]); reloadCurrent(); show3dMenu(); }]);
-  btns.push([mode === 'xr' ? 'VRを おわる' : 'スマホVRを おわる', () => { if (mode === 'xr') renderer.xr.getSession()?.end(); else location.reload(); }]);
+  const btns = [['つづきを 読む', hide3dMenu]];
+  if (page) BOOKS[0].acts.forEach((a, n) => btns.push([a.split('　')[1], () => startPage(page.stageId, n)]));
+  btns.push(['絵本の 部屋へ', goHub]);
+  btns.push([`えの こまかさ：${{ ultra: 'いちばん', high: 'こまかく', quest: 'ゴーグル', mid: 'ふつう', low: 'かるく' }[qualityName]}`, () => { setQuality({ ultra: 'high', high: 'quest', quest: 'mid', mid: 'low', low: 'high' }[qualityName]); reloadCurrent(); show3dMenu(); }]);
+  btns.push([mode === 'xr' ? 'ゴーグルを はずす' : '表紙に もどる', () => { if (mode === 'xr') renderer.xr.getSession()?.end(); else location.reload(); }]);
   btns.forEach(([label, fn], i) => { const b = button3d(label, 0.42, 0.085, () => { sfx.ui(); fn(); }); b.position.set(0, 0.22 - i * 0.1, 0); menu3d.add(b); });
   const head = camera.getWorldPosition(V()), dir = camera.getWorldDirection(V()); dir.y = 0; dir.normalize();
   menu3d.position.copy(head).addScaledVector(dir, 1.1); menu3d.lookAt(head.x, menu3d.position.y, head.z);
@@ -331,7 +359,18 @@ buildFootRing();
 const gaze = { key: null, t: 0, fired: false };
 
 // ---------- モード開始 ----------
-$('#btn-pc').onclick = () => { initAudio(); mode = 'pc'; startGame(); player.lock(); };
+function numberModes() { let k = 1; document.querySelectorAll('#modes li').forEach(li => { if (!li.hidden) li.querySelector('.num').textContent = kanjiNum(k++); }); }
+numberModes();
+$('#btn-ignite').onclick = async () => {
+  initAudio(); sfx.match();
+  try { await Promise.race([document.fonts.load('700 40px "Shippori Mincho B1"'), new Promise(r => setTimeout(r, 1500))]); } catch (e) {}
+  $('#ignite').classList.add('lit');
+  goHub(); hub.light();
+  setTimeout(() => playTheme(), 1400);
+  setTimeout(() => { $('#cover').hidden = false; requestAnimationFrame(() => $('#cover').classList.add('show')); }, 700);
+  setTimeout(() => { $('#ignite').hidden = true; }, 1500);
+};
+$('#btn-pc').onclick = () => { initAudio(); sfx.paper(); mode = 'pc'; startGame(); player.lock(); };
 $('#btn-phonevr').onclick = async () => {
   initAudio(); await player.requestOrientation();
   // 全画面・横向き固定・スリープ防止（対応していない端末では何もしない）
@@ -348,8 +387,8 @@ $('#btn-phone').onclick = async () => {
   setTimeout(() => player.recenter(current.spawn.yaw), 600);
 };
 if (navigator.xr) navigator.xr.isSessionSupported('immersive-vr').then(ok => {
-  if (ok) $('#btn-xr').hidden = false;
-  else if (isQuest) $('#xr-note').textContent = 'VRを つかうには https で ひらいてね';
+  if (ok) { $('#li-xr').hidden = false; numberModes(); }
+  else if (isQuest) $('#xr-note').textContent = 'ゴーグルで ひらくには、https の ページで ひらいてね。';
 }).catch(() => {});
 $('#btn-xr').onclick = async () => {
   initAudio();
@@ -359,11 +398,11 @@ $('#btn-xr').onclick = async () => {
     await renderer.xr.setSession(session);
     renderer.xr.setFoveation(1);   // 視野の端を粗く描く（Questの固定中心窩レンダリング）
     mode = 'xr'; player.enterXR(); startGame();
-    session.addEventListener('end', () => { player.exitXR(); mode = 'pc'; $('#hud').hidden = false; hide3dMenu(); toast('VRを おわりました（クリックで PCそうさ）', true); });
-  } catch (e) { $('#xr-note').textContent = 'VRを はじめられませんでした：' + e.message; }
+    session.addEventListener('end', () => { player.exitXR(); mode = 'pc'; $('#hud').hidden = false; hide3dMenu(); toast('', true, 'ゴーグルを はずしたね。画面を おすと、つづきから。'); });
+  } catch (e) { $('#xr-note').textContent = 'ゴーグルで ひらけなかった……（' + e.message + '）'; }
 };
 function startGame() {
-  $('#start').hidden = true;
+  $('#start').hidden = true; $('#settings').hidden = true;
   $('#hud').hidden = mode === 'xr' || mode === 'phonevr';
   $('#lockmsg').hidden = mode !== 'pc';
   if (!current) goHub(); else { const p = current.spawn; player.placeAt(p.pos, p.yaw); }
@@ -427,6 +466,8 @@ const camDir = V();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
   const frozen = performance.now() < freezeUntil;
+  updateFade(dt);
+  if (!mode && current === hub) camera.rotation.set(-0.3 + Math.sin(t * 0.37) * 0.012, -0.28 + Math.sin(t * 0.21) * 0.03, 0);   // 本が左寄りに見えるように
   if (!frozen && mode && (mode !== 'pc' || player.locked)) player.update(dt);
   if (!frozen) current?.update(dt, t, camera);
   updateBursts(dt);

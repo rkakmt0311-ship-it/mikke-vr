@@ -3,11 +3,12 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { KINDS, makeKindMaterial, isUltra } from './catalog/toys.js';
 import { atlasTex } from './catalog/atlas.js';
+import { addDust } from './util.js';
 
 const batchMats = {};
 function batchMat(kind) {
   const key = kind + (isUltra() ? ':u' : '');
-  return batchMats[key] ||= makeKindMaterial(kind, { vertexColors: true, color: '#ffffff' });
+  return batchMats[key] ||= addDust(makeKindMaterial(kind, { vertexColors: true, color: '#ffffff' }));
 }
 
 // 部屋の中の「動かない物」（家具・壁・梁など）を、材質ごとに1つのメッシュへまとめる。
@@ -37,7 +38,7 @@ export function mergeStatic(root, { raycast = false } = {}) {
     for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     const key = signature(o.material) + (o.castShadow ? '|c' : '') + (o.receiveShadow ? '|r' : '');
-    if (!groups.has(key)) { const mat = o.material.clone(); mat.color.set('#ffffff'); mat.vertexColors = true; groups.set(key, { mat, cast: o.castShadow, recv: o.receiveShadow, list: [] }); }
+    if (!groups.has(key)) { const mat = addDust(o.material.clone()); mat.color.set('#ffffff'); mat.vertexColors = true; groups.set(key, { mat, cast: o.castShadow, recv: o.receiveShadow, list: [] }); }
     groups.get(key).list.push(g); done.push(o);
   });
   done.forEach(o => o.parent.remove(o));

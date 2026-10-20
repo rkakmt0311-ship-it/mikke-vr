@@ -1,6 +1,6 @@
 // VR・スマホVR用の3D UI（キャンバスに描いて板に貼る）
 import * as THREE from 'three';
-import { FONT, noRay } from './util.js';
+import { FONT, noRay, INK, PAPER, SEAL, BRASS } from './util.js';
 
 export class Panel {
   constructor(w, h, pxPerM = 600) {
@@ -17,61 +17,73 @@ export class Panel {
 
 export function roundRect(c, x, y, w, h, r) { c.beginPath(); c.roundRect ? c.roundRect(x, y, w, h, r) : c.rect(x, y, w, h); }
 
-// 絵本風の紙パネルの背景
-export function paper(c, w, h, alpha = 0.92) {
-  roundRect(c, 4, 4, w - 8, h - 8, Math.min(w, h) * 0.06);
-  c.fillStyle = `rgba(250,243,226,${alpha})`; c.fill();
-  c.lineWidth = Math.max(3, w * 0.006); c.strokeStyle = 'rgba(120,80,40,.7)'; c.stroke();
+// 古い紙（純白・純黒は使わない。角は鋭く、ふちは少し焼けている）
+export function paper(c, w, h, alpha = 0.96) {
+  c.save(); c.globalAlpha = alpha;
+  c.fillStyle = PAPER; c.beginPath(); c.moveTo(3, 4); c.lineTo(w - 4, 2); c.lineTo(w - 2, h - 5); c.lineTo(4, h - 3); c.closePath(); c.fill();
+  const g = c.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.3, w / 2, h / 2, Math.max(w, h) * 0.75);
+  g.addColorStop(0, 'rgba(184,169,138,0)'); g.addColorStop(1, 'rgba(120,96,60,.45)'); c.fillStyle = g; c.fill();
+  c.globalAlpha = alpha * 0.08; for (let i = 0; i < w * h / 90; i++) { c.fillStyle = Math.random() < 0.5 ? '#3a2a18' : '#fff8e0'; c.fillRect(Math.random() * w, Math.random() * h, 1.2, 1.2); }
+  c.restore();
 }
+const KANJI = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+export const kanjiNum = n => n < 10 ? KANJI[n] : String(n);
+const inkText = (c, text, x, y, size, color = INK, weight = 600, spacing = 0.12) => {
+  c.font = `${weight} ${size}px ${FONT}`; c.fillStyle = color; c.shadowColor = 'rgba(35,27,20,.35)'; c.shadowBlur = size * 0.04;
+  if ('letterSpacing' in c) c.letterSpacing = `${spacing}em`; c.fillText(text, x, y); c.shadowBlur = 0; if ('letterSpacing' in c) c.letterSpacing = '0px';
+};
 
-// お題リストを描く（PCのHTMLとVRで同じ情報）
+// お題リスト（PCのHTMLとVRで同じ言葉）
 export function drawList(c, w, h, state) {
   paper(c, w, h);
-  const s = w / 600;
-  c.fillStyle = '#5a3a1a'; c.font = `bold ${30 * s}px ${FONT}`; c.textBaseline = 'top';
-  c.fillText(state.title || 'みつけてね', 26 * s, 20 * s);
-  c.font = `${20 * s}px ${FONT}`; c.fillStyle = '#8a6a4a';
-  c.fillText(`${fmtTime(state.time)}　ヒント のこり ${state.hintsLeft}`, 26 * s, 60 * s);
-  let y = 98 * s;
-  c.font = `bold ${27 * s}px ${FONT}`;
+  const s = w / 600; c.textBaseline = 'top';
+  inkText(c, state.title || '', 30 * s, 22 * s, 22 * s, SEAL, 700, 0.18);
+  inkText(c, 'この部屋の どこかに かくれているよ。', 30 * s, 56 * s, 17 * s, INK, 500);
+  const left = state.items.filter(i => !i.found).length;
+  inkText(c, state.cleared ? 'すべて 見つけだしたね。' : `あと ${kanjiNum(left)}つ`, w - 150 * s, 24 * s, 18 * s, BRASS, 700);
+  let y = 96 * s;
   for (const it of state.items) {
-    c.fillStyle = it.found ? '#b0a090' : '#3a2410';
-    c.fillText((it.found ? '✔ ' : '・ ') + it.name, 30 * s, y);
-    if (it.found) { c.strokeStyle = '#c0392b'; c.lineWidth = 3 * s; c.beginPath(); c.moveTo(60 * s, y + 15 * s); c.lineTo(60 * s + c.measureText(it.name).width, y + 15 * s); c.stroke(); }
-    y += 40 * s;
+    inkText(c, it.name, 46 * s, y, 24 * s, it.found ? 'rgba(35,27,20,.35)' : INK, 600);
+    if (it.found) { c.strokeStyle = SEAL; c.lineWidth = 2.4 * s; c.beginPath(); c.moveTo(40 * s, y + 14 * s); c.bezierCurveTo(120 * s, y + 10 * s, 240 * s, y + 18 * s, 60 * s + c.measureText(it.name).width, y + 12 * s); c.stroke(); }
+    y += 38 * s;
   }
-  c.fillStyle = state.secretFound ? '#c08a00' : '#8a6a4a';
-  c.fillText(state.secretFound ? `★ ${state.secretName}` : '★ ？？？（ひみつ）', 30 * s, y + 6 * s);
-  if (state.cleared) { c.fillStyle = '#c0392b'; c.font = `bold ${30 * s}px ${FONT}`; c.fillText('ページ クリア！', 330 * s, 20 * s); }
+  inkText(c, state.secretFound ? `ひみつ：${state.secretName}` : '……それから、リストにない ひみつが ひとつ。', 46 * s, y + 8 * s, 17 * s, state.secretFound ? SEAL : 'rgba(35,27,20,.6)', 500);
+  inkText(c, `${fmtTime(state.time)}`, w - 110 * s, h - 40 * s, 15 * s, 'rgba(35,27,20,.5)', 500);
 }
 export function fmtTime(sec) { sec = Math.floor(sec || 0); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; }
 
-// 浮かぶ文字（ミッケ！など）
-export function textSprite(text, { size = 0.35, color = '#fff', stroke = '#d35400', font = 120 } = {}) {
+// 浮かぶ文字（ミッケ！など）：明朝の金箔
+export function textSprite(text, { size = 0.35, color = '#f0dca0', stroke = '#3a2410', font = 120, sub = '' } = {}) {
   const cv = document.createElement('canvas'), c = cv.getContext('2d');
-  c.font = `900 ${font}px ${FONT}`; const w = Math.ceil(c.measureText(text).width) + 60;
-  cv.width = w; cv.height = font * 1.5;
-  c.font = `900 ${font}px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.lineWidth = font * 0.14; c.strokeStyle = stroke; c.lineJoin = 'round'; c.strokeText(text, w / 2, cv.height / 2);
-  c.fillStyle = color; c.fillText(text, w / 2, cv.height / 2);
+  c.font = `800 ${font}px ${FONT}`; const w = Math.ceil(Math.max(c.measureText(text).width * 1.25, sub ? font * 0.45 * sub.length : 0)) + 80;
+  cv.width = w; cv.height = Math.round(font * (sub ? 2.1 : 1.5));
+  c.textAlign = 'center'; c.textBaseline = 'middle'; if ('letterSpacing' in c) c.letterSpacing = '0.2em';
+  c.font = `800 ${font}px ${FONT}`; c.shadowColor = 'rgba(0,0,0,.6)'; c.shadowBlur = font * 0.18;
+  c.lineWidth = font * 0.08; c.strokeStyle = stroke; c.lineJoin = 'round'; c.strokeText(text, w / 2, font * 0.75);
+  const g = c.createLinearGradient(0, font * 0.3, 0, font * 1.2); g.addColorStop(0, '#fff3c8'); g.addColorStop(0.5, color); g.addColorStop(1, '#a57c2a');
+  c.fillStyle = g; c.fillText(text, w / 2, font * 0.75);
+  if (sub) { c.shadowBlur = 0; c.font = `500 ${font * 0.32}px ${FONT}`; c.fillStyle = '#e8dcc0'; c.fillText(sub, w / 2, font * 1.65); }
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, toneMapped: false }));
   sp.scale.set(size * w / cv.height, size, 1); sp.renderOrder = 950;
   return noRay(sp);
 }
 
-// 3Dボタン（レーザー・見つめる操作で押せる）
-export function button3d(label, w, h, onPress, { color = '#fff6e0', textColor = '#4a2c10', font = 0.5 } = {}) {
+// 3Dボタン：紙の札。見つめると万年筆の下線がすっと引かれる
+export function button3d(label, w, h, onPress, { font = 0.42 } = {}) {
   const p = new Panel(w, h, 500);
-  const render = (hover) => p.draw((c, W, H) => {
-    roundRect(c, 3, 3, W - 6, H - 6, H * 0.3); c.fillStyle = hover ? '#ffd27a' : color; c.fill();
-    c.lineWidth = 4; c.strokeStyle = 'rgba(90,58,26,.8)'; c.stroke();
-    c.fillStyle = textColor; c.font = `bold ${H * font}px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.fillText(label, W / 2, H / 2 + 2);
+  let hoverT = 0, hovering = false, raf = null;
+  const render = () => p.draw((c, W, H) => {
+    paper(c, W, H, 0.97);
+    c.textAlign = 'center'; c.textBaseline = 'middle'; inkText(c, label, W / 2, H / 2, H * font, INK, 700, 0.15);
+    if (hoverT > 0) { c.strokeStyle = SEAL; c.lineWidth = H * 0.05; c.lineCap = 'round'; const tw = c.measureText(label).width * 1.15, x0 = W / 2 - tw / 2;
+      c.beginPath(); c.moveTo(x0, H * 0.78); c.quadraticCurveTo(x0 + tw * 0.5 * hoverT, H * 0.74, x0 + tw * hoverT, H * 0.8); c.stroke(); }
   });
-  render(false);
+  const anim = () => { hoverT = Math.max(0, Math.min(1, hoverT + (hovering ? 1 : -1) * 0.06)); render(); if ((hovering && hoverT < 1) || (!hovering && hoverT > 0)) raf = requestAnimationFrame(anim); else raf = null; };
+  render();
+  p.mesh.rotation.z = (Math.random() - 0.5) * 0.04;   // ほんの少し傾ける
   p.mesh.userData.interact = { kind: 'ui', fn: onPress, dwell: 1.0 };
-  p.mesh.userData.setHover = render;
+  p.mesh.userData.setHover = (on) => { hovering = on; if (!raf) raf = requestAnimationFrame(anim); };
   return p.mesh;
 }
 

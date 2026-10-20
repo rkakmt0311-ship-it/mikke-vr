@@ -2,7 +2,40 @@
 import * as THREE from 'three';
 
 export const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
-export const FONT = '"Hiragino Maru Gothic ProN","Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif';
+// 書体：しっぽり明朝 B1（インクだまりのある活版風の明朝）。英数字は Cormorant Garamond
+export const FONT = '"Cormorant Garamond","Shippori Mincho B1","Yu Mincho","Hiragino Mincho ProN",serif';
+export const INK = '#231B14', PAPER = '#E6DEC8', PAPER_EDGE = '#B8A98A', SEAL = '#8C2D19', BRASS = '#C59B27';
+
+// 「堆積したほこり」：上を向いた面だけ、ざらつきを足して色をくすませる（新品に見えないように）
+export function addDust(mat) {
+  if (!mat || mat.userData.dust || !mat.isMeshStandardMaterial) return mat;
+  mat.userData.dust = true;
+  const prev = mat.onBeforeCompile;
+  mat.onBeforeCompile = (sh, r) => {
+    prev?.(sh, r);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+varying float vDustUp;`)
+      .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+#ifdef USE_INSTANCING
+vDustUp = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * objectNormal).y;
+#else
+vDustUp = normalize(mat3(modelMatrix) * objectNormal).y;
+#endif`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+varying float vDustUp;`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+float dustK = smoothstep(0.5, 1.0, vDustUp);
+roughnessFactor = min(1.0, roughnessFactor + 0.25 * dustK);`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+{ float dk = smoothstep(0.5, 1.0, vDustUp); float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+  diffuseColor.rgb = mix(diffuseColor.rgb, mix(vec3(lum), vec3(0.62, 0.58, 0.52) * lum * 1.6, 0.35), 0.2 * dk); }`);
+  };
+  mat.customProgramCacheKey = () => 'dust' + (mat.vertexColors ? 'v' : '');
+  mat.needsUpdate = true;
+  return mat;
+}
 
 // シード付き乱数（ページごとに同じ配置を再現するため）
 export function makeRng(seed) {
