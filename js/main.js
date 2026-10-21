@@ -158,12 +158,33 @@ function resolve(o) {
   }
   return null;
 }
+const inUI = o => { for (; o; o = o.parent) if (o === uiRoot) return true; return false; };
+const pickC = V(), pickBox = new THREE.Box3(), pickSph = new THREE.Sphere();
+const NEST = 0.4;   // 手前の物から この距離（m）までの奥にあるお題も選べる（ラッパ・ランタン・箱の中）
 function pick(ndc = null) {
   player.aim(raycaster, ndc);
   const targets = [uiRoot]; if (current) targets.push(current.root);
-  const hits = raycaster.intersectObjects(targets, true);
-  for (const h of hits) { if (visibleChain(h.object)) return h; }
-  return null;
+  const hits = raycaster.intersectObjects(targets, true).filter(h => visibleChain(h.object));
+  const first = hits[0] || null;
+  if (!page || (first && inUI(first.object))) return first;
+  const want = [...page.items, page.secret].filter(i => !i.found && i.obj.parent && visibleChain(i.obj)).map(i => i.obj);
+  if (!want.length) return first;
+  // 1) 光線上の、まだ見つけていないお題を優先（入れ物の中に見えている物も押せるように）
+  for (const h of hits) {
+    if (first && h.distance > first.distance + NEST) break;
+    const r = resolve(h.object); if (r?.type === 'item' && want.includes(r.obj)) return h;
+  }
+  // 2) ねらいの補正：光線のすぐ近く（約2°以内）のお題。小さい物・輪っかの形の物を押しやすく
+  const { origin, direction } = raycaster.ray; let best = null, bestK = 1;
+  for (const o of want) {
+    pickBox.setFromObject(o); if (pickBox.isEmpty()) continue; pickBox.getBoundingSphere(pickSph);
+    const t = pickC.copy(pickSph.center).sub(origin).dot(direction); if (t <= 0) continue;
+    const d = pickC.copy(origin).addScaledVector(direction, t).distanceTo(pickSph.center);
+    const tol = Math.max(pickSph.radius * 1.15, t * 0.035), k = d / tol;
+    if (k > 1 || (first && t - pickSph.radius > first.distance + NEST)) continue;
+    if (k < bestK) { bestK = k; best = { object: o, distance: t, point: pickSph.center.clone() }; }
+  }
+  return best || first;
 }
 function activate(hit, via = 'main') {
   if (!hit) return;
