@@ -153,3 +153,30 @@ h1, h2, .lbl, .whisper { text-shadow: 0 0 1px rgba(35, 27, 20, .35); }
 }
 
 #settings { z-index: 26; }
+
+/* しおりから つづける */
+.toc .resume { display: grid; grid-template-columns: 2.2em 1fr; align-items: baseline; margin: 0 0 16px; padding-bottom: 12px; border-bottom: 1px dashed rgba(35,27,20,.25); cursor: pointer; }
+.toc .resume input { accent-color: var(--seal); width: 15px; height: 15px; margin: 0; }
+.toc .resume .lbl { font-size: 16px; }
+.toc .resume em { grid-column: 2; font-style: normal; font-size: 12px; letter-spacing: .14em; color: var(--seal); }
+/* みんなで ひらく */
+.party-box { margin-top: 18px; padding-top: 14px; border-top: 1px dashed rgba(35,27,20,.25); }
+.party-box h3 { margin: 0 0 8px; font-size: 13px; letter-spacing: .3em; color: var(--seal); font-weight: 700; }
+.party-box h3 em { font-style: normal; font-size: 11px; letter-spacing: .15em; color: var(--ink-soft); margin-left: .6em; }
+.party-box .row { display: flex; gap: 14px; flex-wrap: wrap; }
+.party-box .row button { position: relative; font-size: 15px; font-weight: 700; letter-spacing: .1em; padding: 2px 0; }
+.party-box .row button::after { content: ""; position: absolute; left: 0; bottom: -3px; height: 1.5px; width: 100%; background: var(--seal); transform: scaleX(.25); transform-origin: left; transition: transform .5s var(--ease); }
+.party-box .row button:hover::after { transform: scaleX(1); }
+#party .field { display: grid; gap: 6px; margin: 10px 0 14px; font-size: 13px; letter-spacing: .15em; }
+#party .field input { font: inherit; font-size: 18px; letter-spacing: .25em; padding: 6px 10px; background: rgba(255,255,255,.35); border: 1px solid rgba(35,27,20,.35); border-radius: 2px; color: var(--ink); }
+#party .code { font-family: "Cormorant Garamond", serif; font-size: 54px; font-weight: 600; letter-spacing: .3em; color: var(--seal); text-align: center; margin: 0 0 8px; }
+#party .lead { margin: 14px 0 0; text-align: center; font-size: 12px; letter-spacing: .3em; }
+#party .note.err { color: var(--seal); }
+#party .small { font-size: 11px; opacity: .75; }
+.roster { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 6px; }
+.roster li, .roster-hud span { display: flex; align-items: center; gap: .5em; }
+.roster i, .roster-hud i, .memo .by { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.memo .by { margin-left: .5em; vertical-align: middle; }
+.roster-hud { position: absolute; top: 16px; right: 18px; display: flex; gap: 14px; color: #eadcb8; font-size: 12px; letter-spacing: .12em; text-shadow: 0 1px 2px rgba(0,0,0,.95), 0 0 10px rgba(0,0,0,.7); }
+@media (max-width: 720px) { .roster-hud { top: 70px; right: 12px; flex-direction: column; gap: 4px; } }
+#party { z-index: 26; }

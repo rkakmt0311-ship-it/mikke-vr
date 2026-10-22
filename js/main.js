@@ -11,6 +11,7 @@ import { createHub, BOOKS } from './stages/hub.js';
 import { createAttic } from './stages/attic.js';
 import { loadManifest } from './assets.js';
 import { setUltra } from './catalog/toys.js';
+import { Party, SLOTS, MAX_PLAYERS, normCode } from './party.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
@@ -68,6 +69,42 @@ let records = {};
 try { records = JSON.parse(localStorage.getItem('mikke-records-v1') || '{}'); } catch (e) {}
 const saveRecords = () => { try { localStorage.setItem('mikke-records-v1', JSON.stringify(records)); } catch (e) {} };
 const HINTS = 3;
+// みんなで あそぶ（最大4人）：つなぎ方は js/party.js
+const party = new Party({
+  onPage: onPartyPage, onFound: onPartyFound, getPage: () => page ? { stageId: page.stageId, n: page.n, found: foundEntries() } : null,
+  onStatus: partyStatus,
+  onRoster: (players, msg) => {
+    $('#party-roster').innerHTML = players.map(p => `<li><i style="background:${SLOTS[p.slot].color}"></i>${p.name}${p.id === party.myId ? '（じぶん）' : ''}</li>`).join('');
+    if (msg) { toast('', true, msg); sfx.paper(); }
+    renderRoster(); updatePartyLine();
+  },
+});
+scene.add(party.root);
+// しおり：ページごとの途中経過（見つけた物・時間・ヒント・立っていた場所）と、最後に開いていたページ
+const SAVE_KEY = 'mikke-save-v1';
+let save = {}; try { save = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}'); } catch (e) {}
+save.pages ||= {};
+const pageKey = (s, n) => `${s}-${n}`;
+const SECRET = '__secret';
+const foundEntries = () => page ? [...page.items, page.secret].filter(i => i.found).map(i => [i === page.secret ? SECRET : i.id, i.by ?? -1]) : [];
+function saveProgress() {
+  if (!page) return;
+  save.last = { stageId: page.stageId, n: page.n, at: Date.now() };
+  save.pages[pageKey(page.stageId, page.n)] = { found: foundEntries(), time: Math.round(page.time), hints: page.hints, cleared: page.cleared,
+    pos: player.rig.position.toArray().map(v => +v.toFixed(2)), yaw: +camYaw().toFixed(3) };
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {}
+}
+const camYaw = () => { const d = camera.getWorldDirection(V()); return Math.atan2(-d.x, -d.z); };
+// 見つけた物を、演出なしで「見つけた」状態にする（しおりから再開・仲間の進み具合に合わせる）
+function applyFound(entries) {
+  for (const e of entries || []) {
+    const [key, by] = Array.isArray(e) ? e : [e, -1];
+    const it = key === SECRET ? page.secret : page.items.find(i => i.id === key);
+    if (!it || it.found) continue;
+    it.found = true; it.by = by; it.obj.userData.found = true; it.obj.parent?.remove(it.obj);
+  }
+  if (page.items.every(i => i.found)) page.cleared = true;
+}
 
 $('#quality').value = qualityName; $('#quality2').value = qualityName;
 function applyPixelRatio() { renderer.setPixelRatio(Math.min(devicePixelRatio, QUALITY[qualityName].pr)); renderer.setSize(innerWidth, innerHeight); }
@@ -111,8 +148,12 @@ function goHub() {
   renderList(); hide3dMenu(); hideMenu();
 }
 let turning = false;
-async function startPage(stageId, n) {
-  if (turning) return; turning = true;
+let pendingPage = null;
+async function startPage(stageId, n, opts = {}) {
+  // みんなで あそぶとき、ページを めくるのは へやの あるじ。ほかの人は お願いを送る
+  if (party.active && !party.isHost && !opts.remote) { party.send({ t: 'page', stageId, n }); toast('', true, 'へやの あるじに、ページを めくって もらうよ……'); return; }
+  if (turning) { if (opts.remote) pendingPage = { stageId, n, found: opts.found }; return; }
+  turning = true;
   hideMenu(); hide3dMenu();
   if (current === hub) hub.blowOut(); else sfx.paper(null, 1.2);
   await fade(1, 0.45);                                  // ろうそくが消えて、0.4秒の暗転
@@ -122,11 +163,18 @@ async function startPage(stageId, n) {
   const info = stage.setPage(n);
   page = { stageId, n, title: info.title, items: info.targets.map(t => ({ ...t, found: false })),
     secret: { ...info.secret, found: false }, time: 0, hints: 0, cleared: false };
+  // しおりの続きから（クリア済みのページは最初から）。仲間のへやでは、あるじの進み具合に合わせる
+  const sp = save.pages[pageKey(stageId, n)];
+  if (opts.found) applyFound(opts.found);
+  else if (sp && !sp.cleared) { page.time = sp.time || 0; page.hints = sp.hints || 0; applyFound(sp.found); if (opts.resume && sp.pos) player.placeAt(V().fromArray(sp.pos), sp.yaw || 0); }
+  const resumed = foundEntries().length;
   memoOpenUntil = performance.now() + 9000; renderList(); combo = 0; lastFoundAt = -99;
-  showLoading(false);
+  showLoading(false); saveProgress();
+  if (party.isHost) party.send({ t: 'page', stageId, n, found: foundEntries() });
   await fade(0, 1.4);                                   // 丸窓の光が、ゆっくり差しこむ
-  toast(info.title, true, info.hasLens ? '（ルーペでしか 見えない ものも あるらしい……）' : '');
+  toast(info.title, true, resumed ? `（しおりの ところから。もう ${kanjiNum(resumed)}つ 見つけて いる）` : info.hasLens ? '（ルーペでしか 見えない ものも あるらしい……）' : '');
   turning = false;
+  if (pendingPage) { const p = pendingPage; pendingPage = null; onPartyPage({ ...p, fromHost: true }); }
 }
 // 暗転：PC・スマホは画面の幕、ゴーグルは顔のまわりの黒い球
 const fadeSphere = noRay(new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), new THREE.MeshBasicMaterial({ color: '#0d0a08', side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false })));
@@ -203,7 +251,11 @@ const murmur = () => MURMURS[murmurI++ % MURMURS.length];
 // ご褒美の流れ（Vlambeer・Juice it or lose it を参考）：
 // 0〜100ms 世界が止まる（ヒットストップ）＋「ドン」 → 物が内側から光る → 光の粒がリストへ吸い込まれる → 音が解決する
 let combo = 0, lastFoundAt = -99, freezeUntil = 0;
-function found(it, secret) {
+function found(it, secret, by = null) {
+  const remote = by !== null && party.active && by !== party.slot;
+  if (by === null) { by = party.active ? party.slot : -1; if (party.active) party.send({ t: 'found', stageId: page.stageId, n: page.n, key: secret ? SECRET : it.id }); }
+  it.by = by;
+  if (remote) { foundByFriend(it, secret, by); return; }
   it.found = true; it.obj.userData.found = true; it.obj.userData.lensOnly = false; it.obj.visible = true;
   const wp = it.obj.getWorldPosition(V()), now = clock.elapsedTime;
   combo = now - lastFoundAt < 30 ? combo + 1 : 0; lastFoundAt = now;   // 30秒以内に続けて見つけると、音が上がっていく
@@ -223,6 +275,17 @@ function found(it, secret) {
     setTimeout(() => { sfx.clear(); toast('すべて 見つけだしたね。', true, '夜が 明けるまで、好きなだけ 部屋を 歩いてごらん。'); }, 1200);
     renderList();
   } else if (secret && page.cleared) { const key = `${page.stageId}-${page.n + 1}`; records[key].secret = true; saveRecords(); }
+  saveProgress();
+}
+// 仲間が見つけた：その場で光って消える（飛んでくるのは自分が見つけた物だけ）
+function foundByFriend(it, secret, by) {
+  it.found = true; it.obj.userData.found = true; it.obj.userData.lensOnly = false;
+  const wp = it.obj.getWorldPosition(V()), who = SLOTS[by] || SLOTS[0], name = party.players.find(p => p.slot === by)?.name || who.name;
+  spawnBurst(wp, secret); spawnFloater(`${name}が ミッケ！`, wp, who.color); sfx.mikkeCombo(0, wp);
+  toast(`${name}が ミッケ！`, true, secret ? '（ひみつを 見つけた みたい……）' : `「${it.name}」`);
+  it.obj.parent?.remove(it.obj); openMemo(3); renderList();
+  if (!page.cleared && page.items.every(i => i.found)) { page.cleared = true; setTimeout(() => { sfx.clear(); toast('みんなで すべて 見つけだしたね。', true, '夜が 明けるまで、好きなだけ 部屋を 歩いてごらん。'); }, 1200); renderList(); }
+  saveProgress();
 }
 const bursts = [];
 function listAnchor() {
@@ -297,10 +360,10 @@ function renderList() {
   if (!page) { el.innerHTML = '<div class="head"><span class="t">絵本の 部屋</span></div><div class="body"><div class="lead">書見台の 絵本を ひらいて、もくじから えらんでね。</div></div>'; el.classList.remove('collapsed'); el.hidden = !listVisible; draw3dList(); return; }
   const left = page.items.filter(i => !i.found).length;
   el.innerHTML = `<div class="head"><span class="t">${page.title.split('　')[0]}</span><span class="left">${page.cleared ? 'すべて 見つけた' : `あと ${kanjiNum(left)}つ`}</span><span class="time">${fmtTime(page.time)}</span></div>` +
-    `<div class="body">${page.items.map(i => `<div class="it ${i.found ? 'done' : ''}">${i.name}</div>`).join('')}` +
+    `<div class="body">${page.items.map(i => `<div class="it ${i.found ? 'done' : ''}">${i.name}${i.found && party.active && SLOTS[i.by] ? `<i class="by" style="background:${SLOTS[i.by].color}"></i>` : ''}</div>`).join('')}` +
     `<div class="sec ${page.secret.found ? 'done' : ''}">${page.secret.found ? `ひみつ：${page.secret.name}` : '＋ リストに ない ひみつ'}</div></div>`;
   el.hidden = !listVisible;
-  draw3dList();
+  draw3dList(); renderRoster();
 }
 // 3Dリスト（Questは左手首、スマホVRは目の前）
 const list3d = new Panel(0.3, 0.36, 900); noRay(list3d.mesh);
@@ -438,6 +501,8 @@ function startGame() {
   $('#hud').hidden = mode === 'xr' || mode === 'phonevr';
   $('#lockmsg').hidden = mode !== 'pc';
   if (!current) goHub(); else { const p = current.spawn; player.placeAt(p.pos, p.yaw); }
+  if (pendingPage) { const p = pendingPage; pendingPage = null; onPartyPage({ ...p, fromHost: true }); }
+  else if (resumeWanted() && !(party.active && !party.isHost)) startPage(save.last.stageId, save.last.n, { resume: true });
 }
 
 // ---------- 入力のつなぎこみ ----------
@@ -489,11 +554,11 @@ addEventListener('keydown', e => {
 
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); stereo.setSize(innerWidth, innerHeight); resizeComposer(); });
 
-window.__mikke = { game, player, pick, activate, startPage, goHub, useHint, get page() { return page; }, get stage() { return stage; }, camera, renderer };
+window.__mikke = { game, player, pick, activate, startPage, goHub, useHint, party, get save() { return save; }, get page() { return page; }, get stage() { return stage; }, camera, renderer };
 
 // ---------- 毎フレーム ----------
 const clock = new THREE.Clock();
-let perfAcc = 0, perfN = 0, perfT = 0;
+let perfAcc = 0, perfN = 0, perfT = 0, saveT = 0;
 const camDir = V();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
@@ -522,6 +587,8 @@ renderer.setAnimationLoop(() => {
     if (f.t > 1.8) { fxRoot.remove(f.s); f.s.material.map.dispose(); floaters.splice(i, 1); }
   }
   updateHint(dt);
+  party.update(dt, t, { p: head, yaw: camYaw(), where: page ? pageKey(page.stageId, page.n) : 'hub' });
+  if (page && mode && (saveT += dt) > 5) { saveT = 0; saveProgress(); }
 
   // Quest：レーザー・手首リスト
   if (mode === 'xr') {
@@ -589,3 +656,67 @@ function updateGaze(dt, head) {
   const d = THREE.MathUtils.clamp(hit ? hit.distance : 3, 0.35, 4);
   reticle.position.set(0, 0, -d); reticle.scale.setScalar(d);
 }
+
+// ---------- みんなで あそぶ（最大4人） ----------
+function onPartyPage(d) {
+  if (party.isHost) { startPage(d.stageId, d.n); return; }       // なかまの お願い → あるじが めくって、全員へ配る
+  if (!d.fromHost) return;
+  if (!mode) { pendingPage = d; return; }                         // まだ ひらきかたを えらんでいない
+  if (page && page.stageId === d.stageId && page.n === d.n && !turning) { applyFound(d.found); renderList(); return; }
+  startPage(d.stageId, d.n, { remote: true, found: d.found || [] });
+}
+function onPartyFound(d) {
+  if (!page || page.stageId !== d.stageId || page.n !== d.n) return false;
+  const it = d.key === SECRET ? page.secret : page.items.find(i => i.id === d.key);
+  if (!it || it.found) return false;
+  found(it, d.key === SECRET, party.slotOf(d.from)); return true;
+}
+function renderRoster() {
+  const el = $('#roster'); if (!el) return;
+  if (!party.active || party.players.length < 1) { el.hidden = true; return; }
+  const count = s => page ? [...page.items, page.secret].filter(i => i.found && i.by === s).length : 0;
+  el.innerHTML = [...party.players].sort((a, b) => a.slot - b.slot).map(p => `<span><i style="background:${SLOTS[p.slot].color}"></i>${p.name}${p.id === party.myId ? '（じぶん）' : ''}${page ? ` ${count(p.slot)}` : ''}</span>`).join('');
+  el.hidden = false;
+}
+function partyStatus(text, kind) {
+  const st = $('#party-status');
+  if (kind === 'open') { $('#party-code').textContent = party.code; $('#party-share').hidden = false; st.textContent = 'へやが ひらいた。合い言葉を なかまに つたえてね。'; }
+  else if (kind === 'joined') st.textContent = `へやに はいった（${party.name}）。「とじる」を おして、ひらきかたを えらんでね。`;
+  else if (kind === 'closed') st.textContent = '';
+  else st.textContent = text;
+  st.classList.toggle('err', kind === 'err');
+  if (kind === 'err' && mode) toast('', true, text);
+  updatePartyLine();
+}
+function updatePartyLine() {
+  const line = $('#party-line'); if (!line) return;
+  line.textContent = party.active ? `${party.isHost ? 'あるじ' : 'なかま'}・合い言葉「${party.code}」・${party.players.length}／${MAX_PLAYERS}人` : '';
+}
+function openParty(view) {
+  $('#party').hidden = false; sfx.paper();
+  $('#party-host-view').hidden = view !== 'host'; $('#party-join-view').hidden = view !== 'join';
+  if (view === 'host' && party.isHost) partyStatus('', 'open');
+}
+const partyName = () => { const v = $('#party-name').value.trim().slice(0, 8); try { localStorage.setItem('mikke-name', v); } catch (e) {} return v; };
+$('#party-name').value = localStorage.getItem('mikke-name') || '';
+$('#btn-host').onclick = () => openParty('host');
+$('#btn-join').onclick = () => openParty('join');
+$('#party-host-go').onclick = () => { $('#party-share').hidden = true; party.host(partyName() || SLOTS[0].name); };
+$('#party-join-go').onclick = () => party.join($('#party-code-in').value, partyName());
+$('#party-code-in').addEventListener('input', e => { e.target.value = normCode(e.target.value); });
+$('#party-copy').onclick = async () => { try { await navigator.clipboard.writeText(party.shareUrl()); $('#party-copy').textContent = 'コピーした'; } catch (e) { prompt('この リンクを なかまに おくってね', party.shareUrl()); } };
+// さそいのリンク（?room=ABCD）から来たら、合い言葉を入れた状態で ひらく
+const roomParam = normCode(new URLSearchParams(location.search).get('room'));
+if (roomParam) { $('#party-code-in').value = roomParam; $('#btn-ignite').addEventListener('click', () => setTimeout(() => openParty('join'), 1600), { once: true }); }
+
+// ---------- しおりから つづける（表紙） ----------
+function resumeWanted() { return !$('#resume').hidden && $('#resume-on').checked; }
+(() => {
+  const last = save.last, sp = last && save.pages[pageKey(last.stageId, last.n)];
+  if (!sp || sp.cleared || !BOOKS[0].acts[last.n]) return;
+  const left = 6 - sp.found.filter(e => (Array.isArray(e) ? e[0] : e) !== SECRET).length;
+  $('#resume-info').textContent = `${BOOKS[0].acts[last.n].split('　')[0]}・あと ${kanjiNum(left)}つ・${fmtTime(sp.time || 0)}`;
+  $('#resume').hidden = false;
+})();
+addEventListener('pagehide', saveProgress);
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveProgress(); });
