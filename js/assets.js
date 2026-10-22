@@ -45,6 +45,8 @@ function loadGltf(file) {
 export async function swapModel(key, group, { keep = () => false } = {}) {
   const def = manifest.models[key]; if (!def) return false;
   const spec = typeof def === 'string' ? { file: def } : def;
+  // 読み込みを待つ間に、お題（くまの耳のかたつむりなど）が乗せられることがある。消すのは元からあった形だけ
+  const orig = [...group.children];
   try {
     const src = (await loadGltf(spec.file)).clone(true);
     const box = new THREE.Box3().setFromObject(src), size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
@@ -54,7 +56,7 @@ export async function swapModel(key, group, { keep = () => false } = {}) {
     if (spec.rotY) holder.rotation.y = THREE.MathUtils.degToRad(spec.rotY);
     src.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; o.userData.fromModel = true; } });
     // 元の形を隠す（当たり判定として使う物は透明にして残す）
-    [...group.children].forEach(c => {
+    orig.forEach(c => {
       if (keep(c)) c.traverse(o => { if (o.material) { o.material = o.material.clone(); o.material.colorWrite = false; o.material.depthWrite = false; } o.castShadow = false; });
       else group.remove(c);
     });
