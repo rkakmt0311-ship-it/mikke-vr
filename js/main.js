@@ -9,6 +9,7 @@ import { initAudio, sfx, updateListener, startAmbience, stopAmbience, ambientEve
 import { Panel, drawList, textSprite, button3d, makeReticle, makeVignette, fmtTime, kanjiNum } from './ui3d.js';
 import { createHub, BOOKS } from './stages/hub.js';
 import { createAttic } from './stages/attic.js';
+import { createKitchen } from './stages/kitchen.js';
 import { loadManifest } from './assets.js';
 import { setUltra } from './catalog/toys.js';
 import { Party, SLOTS, MAX_PLAYERS, normCode } from './party.js';
@@ -20,7 +21,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 await loadManifest();   // Geminiなどで作った画像素材の一覧（無ければ自動生成の絵を使う）
 
-const STAGES = { toyroom: createAttic };   // 1冊目の絵本＝屋根裏部屋
+const STAGES = { toyroom: createAttic, kitchen: createKitchen };   // 1冊目＝屋根裏部屋、2冊目＝台所（ステージの足し方は docs/new-stage-guide.md）
+const bookOf = id => BOOKS.find(b => b.id === id);
 const QUALITY = {
   ultra: { clutter: 1.0, shadow: 4096, pr: 2, post: true, ultra: true },   // PC向け：影・環境光の陰り・質感を最大に
   high: { clutter: 1.0, shadow: 2048, pr: 2 },
@@ -101,6 +103,7 @@ function applyFound(entries) {
     const [key, by] = Array.isArray(e) ? e : [e, -1];
     const it = key === SECRET ? page.secret : page.items.find(i => i.id === key);
     if (!it || it.found) continue;
+    stage?.onFound?.(it, key === SECRET, true);
     it.found = true; it.by = by; it.obj.userData.found = true; it.obj.parent?.remove(it.obj);
   }
   if (page.items.every(i => i.found)) page.cleared = true;
@@ -162,7 +165,7 @@ async function startPage(stageId, n, opts = {}) {
   else player.placeAt(stage.spawn.pos, stage.spawn.yaw);
   const info = stage.setPage(n);
   page = { stageId, n, title: info.title, items: info.targets.map(t => ({ ...t, found: false })),
-    secret: { ...info.secret, found: false }, time: 0, hints: 0, cleared: false };
+    secret: { ...info.secret, found: false }, clearSub: info.clearSub, time: 0, hints: 0, cleared: false };
   // しおりの続きから（クリア済みのページは最初から）。仲間のへやでは、あるじの進み具合に合わせる
   const sp = save.pages[pageKey(stageId, n)];
   if (opts.found) applyFound(opts.found);
@@ -190,10 +193,19 @@ function updateFade(dt) {
 function reloadCurrent() {
   if (page) { const s = page.stageId, n = page.n; stage = null; startPage(s, n); }
 }
-function openBook(b) {
+let bookSwapping = false;
+async function openBook(b) {
   if (!b.ready) { toast('', true, 'この絵本は、まだ ひらかない。'); sfx.paper(); return; }
-  if (hub.isOpen) return;
-  hub.showPages(b, records); setTimeout(() => toast('', true, 'もくじから、ページを えらんでね。'), 1600);
+  if (bookSwapping || (hub.isOpen && hub.shownBook === b)) return;
+  // 机の本を押したとき：書見台の本と入れ替わるので、ひらいた本が目の前に来るよう、書見台の前へ連れていく
+  if (hub.shownBook !== b) {
+    bookSwapping = true;
+    await fade(1, 0.25);
+    hub.showPages(b, records); player.placeAt(hub.spawn.pos, hub.spawn.yaw);
+    await fade(0, 0.35);
+    bookSwapping = false;
+  } else hub.showPages(b, records);
+  setTimeout(() => toast('', true, 'もくじから、ページを えらんでね。'), 1600);
 }
 function showLoading(on) { $('#loading').classList.toggle('show', on); }
 
@@ -234,15 +246,41 @@ function pick(ndc = null) {
   }
   return best || first;
 }
+// 照準の反応：手の届く所にある「さわれる物」だけ。お題には決して反応しない。
+// お題は無いものとして光線を通すので、お題の上をなぞっても照準は変わらない（中身の形も漏れない）
+const REACH = 2.2;
+function aimsAtGimmick() {
+  player.aim(raycaster);
+  const targets = [uiRoot]; if (current) targets.push(current.root);
+  for (const h of raycaster.intersectObjects(targets, true)) {
+    if (!visibleChain(h.object)) continue;
+    const r = resolve(h.object);
+    if (r?.type === 'item') continue;
+    return r?.type === 'interact' && (r.data.kind !== 'gimmick' || h.distance <= REACH);   // 部屋の仕掛けは手の届く所だけ（遠くからなぞって探せないように）。本や目次はいつでも
+  }
+  return false;
+}
+let gimmickT = 0, gimmickOn = false;
+function updateGimmickSign(dt) {
+  if ((gimmickT += dt) < 0.1) return; gimmickT = 0;
+  const on = (mode === 'pc' && player.locked || mode === 'xr') && aimsAtGimmick();
+  if (on === gimmickOn) return; gimmickOn = on;
+  $('#crosshair').classList.toggle('can', on);
+  player.laserDot.material.color.set(on ? '#ffae3a' : '#fff3c0'); player.laserDot.scale.setScalar(on ? 1.8 : 1);
+}
+// 空振り：押せたことだけを、小さな音と照準のふるえで伝える
+function missed(hit) {
+  sfx.tap(hit?.point);
+  const c = $('#crosshair'); c.classList.remove('miss'); void c.offsetWidth; c.classList.add('miss');
+}
 function activate(hit, via = 'main') {
-  if (!hit) return;
-  const r = resolve(hit.object); if (!r) return;
+  const r = hit ? resolve(hit.object) : null;
+  if (!r) { missed(hit); return; }
   if (r.type === 'interact') { r.data.fn(hit); return; }
   if (!page) return;
   const it = page.items.find(i => i.obj === r.obj && !i.found);
   if (it) { found(it, false); return; }
   if (page.secret.obj === r.obj && !page.secret.found) found(page.secret, true);
-  // まちがいは何も起きない
 }
 const flying = [], floaters = [];
 const MURMURS = ['（……よく 見つけたね）', '（……そこに いたのか）', '（……目が 慣れてきたね）', '（……息を ひそめて いたのに）', '（……あと すこし）', '（……ほこりを かぶって いたね）'];
@@ -255,6 +293,7 @@ function found(it, secret, by = null) {
   const remote = by !== null && party.active && by !== party.slot;
   if (by === null) { by = party.active ? party.slot : -1; if (party.active) party.send({ t: 'found', stageId: page.stageId, n: page.n, key: secret ? SECRET : it.id }); }
   it.by = by;
+  stage?.onFound?.(it, secret);   // ステージへ知らせる（台所：見つけた物が、見ていない間に食卓へ並ぶ）
   if (remote) { foundByFriend(it, secret, by); return; }
   it.found = true; it.obj.userData.found = true; it.obj.userData.lensOnly = false; it.obj.visible = true;
   const wp = it.obj.getWorldPosition(V()), now = clock.elapsedTime;
@@ -272,7 +311,7 @@ function found(it, secret, by = null) {
     const key = `${page.stageId}-${page.n + 1}`, prev = records[key];
     const rec = { best: Math.min(prev?.best ?? Infinity, page.time), hints: prev ? Math.min(prev.hints, page.hints) : page.hints, secret: !!(prev?.secret || page.secret.found) };
     records[key] = rec; saveRecords();
-    setTimeout(() => { sfx.clear(); toast('すべて 見つけだしたね。', true, '夜が 明けるまで、好きなだけ 部屋を 歩いてごらん。'); }, 1200);
+    setTimeout(() => { sfx.clear(); toast('すべて 見つけだしたね。', true, page?.clearSub || '夜が 明けるまで、好きなだけ 部屋を 歩いてごらん。'); }, 1200);
     renderList();
   } else if (secret && page.cleared) { const key = `${page.stageId}-${page.n + 1}`; records[key].secret = true; saveRecords(); }
   saveProgress();
@@ -351,17 +390,18 @@ function listState() {
   return { title: page.title, time: page.time, hintsLeft: HINTS - page.hints, items: page.items, secretFound: page.secret.found, secretName: page.secret.name, cleared: page.cleared };
 }
 let listVisible = true;
-// メモ：ふだんは1行に折りたたみ、ページの始めと見つけた直後だけ広がる。Tab（📜）で広げたままにできる
-let memoPinned = false, memoOpenUntil = 0;
+// メモ：いつでも見られるのが基本。自分で たたんだときだけ1行になり、見つけた直後は少し広がる
+let memoFolded = false, memoOpenUntil = 0;
 const openMemo = (sec) => { memoOpenUntil = performance.now() + sec * 1000; renderList(); };
 function renderList() {
   const el = $('#list');
-  el.classList.toggle('collapsed', !memoPinned && performance.now() > memoOpenUntil);
-  if (!page) { el.innerHTML = '<div class="head"><span class="t">絵本の 部屋</span></div><div class="body"><div class="lead">書見台の 絵本を ひらいて、もくじから えらんでね。</div></div>'; el.classList.remove('collapsed'); el.hidden = !listVisible; draw3dList(); return; }
+  el.classList.toggle('collapsed', memoFolded && performance.now() > memoOpenUntil);
+  if (!page) { el.innerHTML = '<div class="head"><span class="t">絵本の 部屋</span></div><div class="body"><div class="lead">書見台の 絵本か、机に 立てかけた 絵本を ひらいて、もくじから えらんでね。</div></div>'; el.classList.remove('collapsed'); el.hidden = !listVisible; draw3dList(); return; }
   const left = page.items.filter(i => !i.found).length;
   el.innerHTML = `<div class="head"><span class="t">${page.title.split('　')[0]}</span><span class="left">${page.cleared ? 'すべて 見つけた' : `あと ${kanjiNum(left)}つ`}</span><span class="time">${fmtTime(page.time)}</span></div>` +
     `<div class="body">${page.items.map(i => `<div class="it ${i.found ? 'done' : ''}">${i.name}${i.found && party.active && SLOTS[i.by] ? `<i class="by" style="background:${SLOTS[i.by].color}"></i>` : ''}</div>`).join('')}` +
-    `<div class="sec ${page.secret.found ? 'done' : ''}">${page.secret.found ? `ひみつ：${page.secret.name}` : '＋ リストに ない ひみつ'}</div></div>`;
+    `<div class="sec ${page.secret.found ? 'done' : ''}">${page.secret.found ? `ひみつ：${page.secret.name}` : '＋ リストに ない ひみつ'}</div></div>` +
+    (mode === 'pc' ? `<div class="keyhint">Tab で ${memoFolded ? 'ひらく' : 'たたむ'}</div>` : '');
   el.hidden = !listVisible;
   draw3dList(); renderRoster();
 }
@@ -369,7 +409,7 @@ function renderList() {
 const list3d = new Panel(0.3, 0.36, 900); noRay(list3d.mesh);
 function draw3dList() {
   const st = listState();
-  if (!st) list3d.draw((c, w, h) => drawList(c, w, h, { title: '絵本の 部屋', time: 0, hintsLeft: HINTS, items: [{ name: '書見台の 絵本を ひらこう', found: false }], secretFound: false }));
+  if (!st) list3d.draw((c, w, h) => drawList(c, w, h, { title: '絵本の 部屋', time: 0, hintsLeft: HINTS, items: [{ name: '書見台か 机の 絵本を ひらこう', found: false }], secretFound: false }));
   else list3d.draw((c, w, h) => drawList(c, w, h, st));
 }
 let lastListSec = -1;
@@ -400,7 +440,7 @@ const toggleLens = () => setLens(!game.lens);
 function showMenu() {
   if (mode === 'xr' || mode === 'phonevr') { show3dMenu(); return; }
   const mp = $('#menu-pages'); mp.innerHTML = '';
-  if (page) BOOKS[0].acts.forEach((a, n) => { const [act, name] = a.split('　'), b = document.createElement('button');
+  if (page) bookOf(page.stageId).acts.forEach((a, n) => { const [act, name] = a.split('　'), b = document.createElement('button');
     b.innerHTML = `<span class="act">${act}</span>${name}${records[`${page.stageId}-${n + 1}`] ? '<span class="done">済</span>' : ''}`; b.onclick = () => startPage(page.stageId, n); mp.appendChild(b); });
   $('#menu').hidden = false;
 }
@@ -424,7 +464,7 @@ function show3dMenu() {
   hide3dMenu(); sfx.ui();
   menu3d = new THREE.Group();
   const btns = [['つづきを 読む', hide3dMenu]];
-  if (page) BOOKS[0].acts.forEach((a, n) => btns.push([a.split('　')[1], () => startPage(page.stageId, n)]));
+  if (page) bookOf(page.stageId).acts.forEach((a, n) => btns.push([a.split('　')[1], () => startPage(page.stageId, n)]));
   btns.push(['絵本の 部屋へ', goHub]);
   btns.push([`えの こまかさ：${{ ultra: 'いちばん', high: 'こまかく', quest: 'ゴーグル', mid: 'ふつう', low: 'かるく' }[qualityName]}`, () => { setQuality({ ultra: 'high', high: 'quest', quest: 'mid', mid: 'low', low: 'high' }[qualityName]); reloadCurrent(); show3dMenu(); }]);
   btns.push([mode === 'xr' ? 'ゴーグルを はずす' : '表紙に もどる', () => { if (mode === 'xr') renderer.xr.getSession()?.end(); else location.reload(); }]);
@@ -526,7 +566,7 @@ addEventListener('keydown', e => {
   if (e.code === 'Escape' && player.fallback && player.locked) { player.unlockFallback(); return; }
   if (e.code === 'KeyH') useHint();
   if (e.code === 'KeyL') toggleLens();
-  if (e.code === 'Tab') { memoPinned = !memoPinned; renderList(); }
+  if (e.code === 'Tab' && player.locked) { e.preventDefault(); memoFolded = !memoFolded; memoOpenUntil = 0; renderList(); }
   if (e.code === 'KeyE' && player.locked) activate(pick(), 'gimmick');
 });
 // スマホ手持ち：スティック・上下ボタン・タップ・ドラッグ
@@ -549,12 +589,12 @@ addEventListener('keydown', e => {
       activate(pick(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)));
     down = null; });
   $('#phonebtns').addEventListener('click', e => { const a = e.target.dataset.act;
-    if (a === 'list') { memoPinned = !memoPinned; renderList(); } if (a === 'hint') useHint(); if (a === 'lens') toggleLens(); if (a === 'menu') showMenu(); });
+    if (a === 'list') { memoFolded = !memoFolded; memoOpenUntil = 0; renderList(); } if (a === 'hint') useHint(); if (a === 'lens') toggleLens(); if (a === 'menu') showMenu(); });
 })();
 
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); stereo.setSize(innerWidth, innerHeight); resizeComposer(); });
 
-window.__mikke = { game, player, pick, activate, startPage, goHub, useHint, party, get save() { return save; }, get page() { return page; }, get stage() { return stage; }, camera, renderer };
+window.__mikke = { game, player, pick, activate, aimsAtGimmick, startPage, goHub, useHint, party, get save() { return save; }, get page() { return page; }, get stage() { return stage; }, camera, renderer };
 
 // ---------- 毎フレーム ----------
 const clock = new THREE.Clock();
@@ -568,6 +608,7 @@ renderer.setAnimationLoop(() => {
   if (!frozen && mode && (mode !== 'pc' || player.locked)) player.update(dt);
   if (!frozen) current?.update(dt, t, camera);
   updateBursts(dt);
+  updateGimmickSign(dt);
   updateListener(camera);
 
   if (page && !page.cleared && mode) { page.time += dt; const s = Math.floor(page.time); if (s !== lastListSec) { lastListSec = s; renderList(); } }
@@ -713,9 +754,10 @@ if (roomParam) { $('#party-code-in').value = roomParam; $('#btn-ignite').addEven
 function resumeWanted() { return !$('#resume').hidden && $('#resume-on').checked; }
 (() => {
   const last = save.last, sp = last && save.pages[pageKey(last.stageId, last.n)];
-  if (!sp || sp.cleared || !BOOKS[0].acts[last.n]) return;
+  const act = last && bookOf(last.stageId)?.acts?.[last.n];
+  if (!sp || sp.cleared || !act) return;
   const left = 6 - sp.found.filter(e => (Array.isArray(e) ? e[0] : e) !== SECRET).length;
-  $('#resume-info').textContent = `${BOOKS[0].acts[last.n].split('　')[0]}・あと ${kanjiNum(left)}つ・${fmtTime(sp.time || 0)}`;
+  $('#resume-info').textContent = `${act.split('　')[0]}・あと ${kanjiNum(left)}つ・${fmtTime(sp.time || 0)}`;
   $('#resume').hidden = false;
 })();
 addEventListener('pagehide', saveProgress);

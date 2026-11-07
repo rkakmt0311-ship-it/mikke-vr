@@ -156,6 +156,8 @@ export const sfx = {
   ui() { if (!ctx) return; sfx.paper(null, 0.5); },
   paper(pos, vol = 1) { if (!ctx) return; noise({ a: 0.15, dec: 0.2, peak: 0.1 * vol, type: 'bandpass', freq: 1200, q: 1.5, buf: 'pink', pos, bus: pos ? 'sfx' : 'ui' }); },
   book() { if (!ctx) return; sfx.latch(); noise({ a: 0.3, dec: 0.5, peak: 0.12, type: 'bandpass', freq: 900, q: 1.2, buf: 'pink', when: 0.2 }); thumpAt(null, 0.85, 0.3, 'ui'); },
+  whistle(pos) { if (!ctx) return; [0, 0.5, 1.1].forEach((w, i) => tone(1750 + i * 40, { a: 0.5, dec: 1.4, peak: 0.07, pos, when: w, cents: 12 })); noise({ a: 0.4, dec: 2.6, peak: 0.05, type: 'bandpass', freq: 3000, q: 3, pos }); },
+  tap(pos) { if (!ctx) return; noise({ dec: 0.035, peak: 0.1, type: 'bandpass', freq: 760, q: 2.5, pos, bus: pos ? 'sfx' : 'ui' }); },
   latch(pos) { if (!ctx) return; brassAt(2400, pos, 0, 0.06, 0.25, pos ? 'sfx' : 'ui'); },
   match() { if (!ctx) return; noise({ a: 0.02, dec: 0.25, peak: 0.25, type: 'bandpass', freq: 3000, q: 0.8, sweep: 0.6, bus: 'ui' }); noise({ a: 0.08, dec: 0.9, peak: 0.12, type: 'lowpass', freq: 600, buf: 'brown', when: 0.18, bus: 'ui' }); },
   blowOut() { if (!ctx) return; noise({ a: 0.05, dec: 0.45, peak: 0.12, type: 'bandpass', freq: 800, q: 0.5, buf: 'pink', sweep: 0.5, bus: 'ui' }); },
@@ -198,6 +200,7 @@ const somewhere = () => new THREE.Vector3(rnd(-3, 3), rnd(1.5, 4.5), rnd(-3, 3))
 export const ambientEvents = {
   creak: () => sfx.creak(somewhere()),
   chime: () => pluck(pentaFreq(Math.floor(rnd(5, 12)), 1174.66), { pos: somewhere(), peak: 0.02, dec: 2.5, bus: 'world' }),
+  drip: () => pluck(rnd(1700, 2600), { pos: somewhere(), peak: 0.012, dec: 0.22, bus: 'world' }),   // 水のしずく
 };
 
 // ---------- タイトルの主題（少し調子の外れた古いオルゴール） ----------

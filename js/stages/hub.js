@@ -9,7 +9,7 @@ import { pbr, fitUV, setPbrLite } from '../pbr.js';
 export const BOOKS = [
   { id: 'toyroom', title: 'やねうらの へや', ready: true, color: '#5a1212',
     acts: ['第一の幕　西日の さす ころ', '第二の幕　ランプが ともる ころ', '第三の幕　月かげの ざわめく ころ'] },
-  { id: 'sea', title: 'うみの なか', ready: false, color: '#1d3a46' },
+  { id: 'kitchen', title: 'だいどころ', ready: true, color: '#4f7a47', acts: ['第一の幕　だれも こない 夕ごはん', '第二の幕　おきゃくさまが くる', '第三の幕　まよなかの かくれんぼ'] },
   { id: 'mansion', title: 'ようかんの しょさい', ready: false, color: '#2e2238' },
 ];
 
@@ -18,8 +18,10 @@ const ink = (c, text, x, y, size, color = INK, weight = 600, spacing = 0.2) => {
   c.shadowColor = 'rgba(35,27,20,.35)'; c.shadowBlur = size * 0.05; c.fillText(text, x, y); c.shadowBlur = 0; if ('letterSpacing' in c) c.letterSpacing = '0px';
 };
 // 革の表紙：くすんだ深紅の革、すり切れ、金箔押しの題字
+const coverCache = new Map();
 function leatherCover(b, w = 520, h = 680) {
-  return canvasTex(w, h, (c) => {
+  if (coverCache.has(b)) return coverCache.get(b);
+  const t = canvasTex(w, h, (c) => {
     c.fillStyle = b.color; c.fillRect(0, 0, w, h);
     for (let i = 0; i < 9000; i++) { c.fillStyle = `rgba(${Math.random() < 0.5 ? '0,0,0' : '255,220,180'},${Math.random() * 0.06})`; c.fillRect(Math.random() * w, Math.random() * h, 2, 2); }
     const edge = c.createRadialGradient(w / 2, h / 2, w * 0.3, w / 2, h / 2, w * 0.85); edge.addColorStop(0, 'rgba(0,0,0,0)'); edge.addColorStop(1, 'rgba(20,8,4,.55)'); c.fillStyle = edge; c.fillRect(0, 0, w, h);
@@ -33,6 +35,7 @@ function leatherCover(b, w = 520, h = 680) {
     c.beginPath(); c.arc(w / 2 + 14, 462, 40, 0, Math.PI * 2); c.fillStyle = b.color; c.fill();   // 三日月
     c.font = `500 22px ${FONT}`; c.fillStyle = 'rgba(232,210,150,.75)'; c.fillText(b.title, w / 2, h - 70);
   });
+  coverCache.set(b, t); return t;
 }
 
 export function createHub(game) {
@@ -80,12 +83,16 @@ export function createHub(game) {
   const deskM = addDust(pbr('table', { color: '#a07a60', tile: 1.0, rough: 0.7 }));
   fitUV(mesh(new THREE.BoxGeometry(2.2, 0.08, 0.9), deskM, V(0, 0.78, 0), desk));
   [[-1, -0.38], [1, -0.38], [-1, 0.38], [1, 0.38]].forEach(([x, z]) => fitUV(mesh(new THREE.BoxGeometry(0.08, 0.78, 0.08), deskM, V(x, 0.39, z), desk)));
-  // 机の上：まだひらけない絵本（ほこりをかぶって積まれている）
-  const later = BOOKS.filter(b => !b.ready).map((b, i) => {
-    const g = new THREE.Group(); g.position.set(0.55 + i * 0.05, 0.82 + i * 0.075, -0.05 + i * 0.03); g.rotation.y = 0.3 - i * 0.25; desk.add(g);
+  // 机の上：ひらける本は左に立てかけ、ろうそくで照らす。まだひらけない本は右に、ほこりをかぶって置く
+  // ひらける本を押すと、書見台の本と入れ替わる（slot.b がいま机にある本）
+  const deskSlots = BOOKS.slice(1).map((b, i) => {
+    const g = new THREE.Group(); desk.add(g);
+    if (b.ready) { g.position.set(-0.58, 0.97, 0.02); g.rotation.set(0.55, 0.22, 0); fitUV(mesh(new THREE.BoxGeometry(0.3, 0.25, 0.06), deskM, V(-0.58, 0.945, -0.2), desk)); }
+    else { g.position.set(0.55, 0.82, -0.05); g.rotation.y = 0.05; }
     const m = mesh(new THREE.BoxGeometry(0.42, 0.07, 0.56), [SM('#e3d8bc', 0.9), SM('#e3d8bc', 0.9), SM('#fff', 0.85, 0, { map: leatherCover(b) }), SM(b.color, 0.9), SM('#e3d8bc', 0.9), SM(b.color, 0.9)], V(0, 0.035, 0), g);
-    m.userData.interact = { kind: 'ui', dwell: 1.2, fn: () => game.openBook(b) };
-    return g;
+    const slot = { b, m };
+    m.userData.interact = { kind: 'ui', dwell: 1.2, fn: () => game.openBook(slot.b) };
+    return slot;
   });
 
   // ---------- ろうそく（火が灯ると部屋が浮かび上がる） ----------
@@ -101,6 +108,7 @@ export function createHub(game) {
   };
   candle(V(0.42, 0, 0.12), 0.25, 1.4, desk);
   candle(V(-0.7, 0, 0.0), 0.32, 1.6, desk);
+  candle(V(-0.2, 0.82, 0.22), 0.16, 0.9, desk);   // 机に立てかけた絵本を照らす
 
   // ---------- 真鍮の書見台と、重い革装丁の絵本 ----------
   const lect = new THREE.Group(); lect.position.set(0, 0, 0.05); root.add(lect);
@@ -122,21 +130,35 @@ export function createHub(game) {
   // 左側のページ（表紙の裏）：挿絵
   const coverPivot = new THREE.Group(); coverPivot.position.set(0, BT + 0.004, 0); book.add(coverPivot);
   const coverM = SM('#fff', 0.8, 0, { map: leatherCover(BOOKS[0]) });
-  const cover = mesh(new THREE.BoxGeometry(BW + 0.012, 0.008, BD + 0.012), [SM(BOOKS[0].color, 0.8), SM(BOOKS[0].color, 0.8), coverM, SM('#e6dcc0', 0.95), SM(BOOKS[0].color, 0.8), SM(BOOKS[0].color, 0.8)], V(BW / 2, 0, 0), coverPivot);
-  const plate = canvasTex(400, 600, (c, w, h) => { c.fillStyle = PAPER; c.fillRect(0, 0, w, h);
-    for (let i = 0; i < 5000; i++) { c.fillStyle = `rgba(60,40,20,${Math.random() * 0.06})`; c.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5); }
-    c.strokeStyle = INK; c.lineWidth = 1.2;   // 銅版画風の線画：屋根裏の三角屋根と丸窓
-    c.beginPath(); c.moveTo(60, 420); c.lineTo(200, 160); c.lineTo(340, 420); c.closePath(); c.stroke();
-    for (let i = 0; i < 30; i++) { c.beginPath(); c.moveTo(70 + i * 9, 420); c.lineTo(200 - (i % 2) * 2, 170 + i * 1.5); c.globalAlpha = 0.25; c.stroke(); } c.globalAlpha = 1;
-    c.beginPath(); c.arc(200, 300, 36, 0, Math.PI * 2); c.stroke(); c.beginPath(); c.moveTo(164, 300); c.lineTo(236, 300); c.moveTo(200, 264); c.lineTo(200, 336); c.stroke();
-    c.textAlign = 'center'; ink(c, '第一の 絵本', w / 2, 500, 26, INK, 600); ink(c, 'やねうらの へや', w / 2, 540, 20, SEAL, 600); });
-  const leftPage = mesh(new THREE.PlaneGeometry(BW * 0.94, BD * 0.94), SM('#fff', 0.95, 0, { map: plate }), V(BW / 2, -0.0045, 0), coverPivot, { cast: false });
+  const bookColorM = SM(BOOKS[0].color, 0.8);   // 表紙のふちと背（本を替えると色も替わる）
+  const cover = mesh(new THREE.BoxGeometry(BW + 0.012, 0.008, BD + 0.012), [bookColorM, bookColorM, coverM, SM('#e6dcc0', 0.95), bookColorM, bookColorM], V(BW / 2, 0, 0), coverPivot);
+  // 表紙の裏の挿絵（銅版画風の線画）：絵本ごとに1枚
+  const plateCache = new Map();
+  const plateOf = (b) => { if (plateCache.has(b)) return plateCache.get(b);
+    const t = canvasTex(400, 600, (c, w, h) => { c.fillStyle = PAPER; c.fillRect(0, 0, w, h);
+      for (let i = 0; i < 5000; i++) { c.fillStyle = `rgba(60,40,20,${Math.random() * 0.06})`; c.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5); }
+      c.strokeStyle = INK; c.lineWidth = 1.2;
+      if (b.id === 'kitchen') {   // 吊るした片手鍋と、湯気
+        c.beginPath(); c.moveTo(60, 150); c.lineTo(340, 150); c.moveTo(200, 150); c.lineTo(200, 215); c.stroke();
+        c.beginPath(); c.moveTo(130, 260); c.lineTo(270, 260); c.lineTo(255, 390); c.quadraticCurveTo(200, 415, 145, 390); c.closePath(); c.stroke();
+        c.beginPath(); c.ellipse(200, 260, 70, 16, 0, 0, Math.PI * 2); c.stroke();
+        c.beginPath(); c.moveTo(270, 262); c.lineTo(345, 235); c.stroke();
+        for (let i = 0; i < 16; i++) { c.globalAlpha = 0.25; c.beginPath(); c.moveTo(150 + i * 6.5, 285 + (i % 3) * 8); c.lineTo(155 + i * 6, 385); c.stroke(); } c.globalAlpha = 1;
+      } else {                    // 屋根裏の三角屋根と丸窓
+        c.beginPath(); c.moveTo(60, 420); c.lineTo(200, 160); c.lineTo(340, 420); c.closePath(); c.stroke();
+        for (let i = 0; i < 30; i++) { c.beginPath(); c.moveTo(70 + i * 9, 420); c.lineTo(200 - (i % 2) * 2, 170 + i * 1.5); c.globalAlpha = 0.25; c.stroke(); } c.globalAlpha = 1;
+        c.beginPath(); c.arc(200, 300, 36, 0, Math.PI * 2); c.stroke(); c.beginPath(); c.moveTo(164, 300); c.lineTo(236, 300); c.moveTo(200, 264); c.lineTo(200, 336); c.stroke();
+      }
+      c.textAlign = 'center'; ink(c, `第${['一', '二', '三'][BOOKS.indexOf(b)]}の 絵本`, w / 2, 500, 26, INK, 600); ink(c, b.title, w / 2, 540, 20, SEAL, 600); });
+    plateCache.set(b, t); return t; };
+  const leftPage = mesh(new THREE.PlaneGeometry(BW * 0.94, BD * 0.94), SM('#fff', 0.95, 0, { map: plateOf(BOOKS[0]) }), V(BW / 2, -0.0045, 0), coverPivot, { cast: false });
   leftPage.rotation.x = Math.PI / 2; leftPage.rotation.z = Math.PI;
   // 留め金
   const clasp = mesh(new THREE.BoxGeometry(0.03, 0.012, 0.06), brass, V(BW + 0.006, 0.002, 0), coverPivot);
-  const spine = mesh(new THREE.CylinderGeometry(BT * 0.6, BT * 0.6, BD + 0.012, 16, 1, false, Math.PI, Math.PI), SM(BOOKS[0].color, 0.8), V(0, BT / 2, 0), book); spine.rotation.x = Math.PI / 2;
+  const spine = mesh(new THREE.CylinderGeometry(BT * 0.6, BT * 0.6, BD + 0.012, 16, 1, false, Math.PI, Math.PI), bookColorM, V(0, BT / 2, 0), book); spine.rotation.x = Math.PI / 2;
 
   let open = 0, opening = false, records = {};
+  let shown = BOOKS[0];   // もくじに出している絵本
   const actRects = [];
   function drawToc() {
     actRects.length = 0;
@@ -145,8 +167,8 @@ export function createHub(game) {
       c.textBaseline = 'alphabetic'; c.textAlign = 'left';
       ink(c, 'も く じ', w * 0.12, h * 0.13, w * 0.075, SEAL, 700, 0.35);
       c.strokeStyle = 'rgba(35,27,20,.5)'; c.lineWidth = 1; c.beginPath(); c.moveTo(w * 0.12, h * 0.16); c.lineTo(w * 0.88, h * 0.165); c.stroke();
-      BOOKS[0].acts.forEach((a, i) => {
-        const y = h * (0.3 + i * 0.19), rec = records[`toyroom-${i + 1}`];
+      shown.acts.forEach((a, i) => {
+        const y = h * (0.3 + i * 0.19), rec = records[`${shown.id}-${i + 1}`];
         ink(c, a.split('　')[0], w * 0.12, y, w * 0.045, 'rgba(35,27,20,.7)', 600, 0.25);
         ink(c, a.split('　')[1], w * 0.12, y + h * 0.065, w * 0.062, INK, 700, 0.15);
         if (rec) { // 済みの朱印
@@ -160,18 +182,26 @@ export function createHub(game) {
     });
   }
   // もくじの行を押せるようにする（ページの上に、透明な札を置く）
-  const actHits = BOOKS[0].acts.map((a, i) => {
+  const actHits = Array.from({ length: Math.max(...BOOKS.map(b => b.acts?.length || 0)) }, (_, i) => {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(BW * 0.85, BD * 0.17), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }));
     m.rotation.x = -Math.PI / 2; m.position.set(BW / 2, BT + 0.003, -BD / 2 + BD * (0.3 + i * 0.19 + 0.02)); m.visible = false; book.add(m);
-    m.userData.interact = { kind: 'ui', dwell: 1.2, fn: () => game.startPage('toyroom', i) };
+    m.userData.interact = { kind: 'ui', dwell: 1.2, fn: () => game.startPage(shown.id, i) };
     return m;
   });
   const openBook = () => {
     if (opening || open > 0) return; opening = true; game.sfx.latch(clasp.getWorldPosition(V()));
     setTimeout(() => game.sfx.book(), 250);
   };
-  cover.userData.interact = { kind: 'ui', dwell: 1.2, fn: () => game.openBook(BOOKS[0]) };
+  cover.userData.interact = { kind: 'ui', dwell: 1.2, fn: () => game.openBook(shown) };
   clasp.userData.interact = cover.userData.interact;
+
+  // 机の本を書見台へ。ひらいていたら閉じて、いまの本を机の、その本があった場所へ置く
+  const putOnLectern = (b) => {
+    const slot = deskSlots.find(s => s.b === b), old = shown;
+    if (slot) { slot.b = old; slot.m.material[2].map = leatherCover(old); slot.m.material[3].color.set(old.color); slot.m.material[5].color.set(old.color); }
+    shown = b; coverM.map = leatherCover(b); bookColorM.color.set(b.color); leftPage.material.map = plateOf(b);
+    open = 0; opening = false; coverPivot.rotation.z = 0; actHits.forEach(m => m.visible = false);
+  };
 
   // ほこり（光の中を漂う）
   const N = 220, pos = new Float32Array(N * 3);
@@ -188,12 +218,14 @@ export function createHub(game) {
     id: 'hub', root, bounds, colliders, spawn: { pos: V(0, 0, 1.25), yaw: 0 }, bgm: 'hub',
     ambience: { roomTone: 0.022, lowpass: 230, events: ['creak'] },
     // もくじを書き直して、本をひらく
-    showPages(b, recs) { records = recs || {}; drawToc(); openBook(); },
+    showPages(b, recs) { if (b !== shown) putOnLectern(b); records = recs || {}; drawToc(); openBook(); },
+    get shownBook() { return shown; },
     get isOpen() { return open >= 1; },
     // ろうそくに火をつける（タイトルの「儀式」）
     light() { lit = 1; litT = 0; flames.forEach(f => { f.f.visible = true; }); },
     blowOut() { blowT = 0; game.sfx.blowOut(); },
     enter(scene, renderer) {
+      blowT = -1;   // ページから戻ったら、ろうそくは灯っている
       scene.background = new THREE.Color('#0d0a08'); scene.fog = new THREE.Fog('#0d0a08', 4, 11);
       scene.environment = game.envTex; scene.environmentIntensity = 0.1;
       renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.25;
@@ -208,7 +240,7 @@ export function createHub(game) {
       hemi.intensity = 0.12 + 0.25 * smooth(litT) * kBlow; dustM.opacity = 0.55 * smooth(litT) * kBlow;
       // 表紙：初めはゆっくり、最後は重みでぱたんと落ちる
       if (opening) { open = Math.min(1, open + dt / 1.5); coverPivot.rotation.z = Math.PI * (open < 0.7 ? smooth(open / 0.7) * 0.85 : 0.85 + 0.15 * Math.pow((open - 0.7) / 0.3, 2));
-        if (open >= 1) { opening = false; actHits.forEach(m => m.visible = true); } }
+        if (open >= 1) { opening = false; actHits.forEach((m, i) => m.visible = i < shown.acts.length); } }
       const p = dustG.attributes.position;
       for (let i = 0; i < N; i++) { p.setY(i, p.getY(i) + Math.sin(t * 0.3 + i) * 0.0004); p.setX(i, p.getX(i) + Math.cos(t * 0.2 + i * 1.7) * 0.0004); }
       p.needsUpdate = true;
