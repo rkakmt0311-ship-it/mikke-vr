@@ -352,7 +352,8 @@ export function createAttic(game) {
     mesh(new THREE.SphereGeometry(0.018, 10, 8), P('#1a1a1a', 0.2), V(0, -0.02, 0.16), bearHead);
     [-0.05, 0.05].forEach(x => mesh(new THREE.SphereGeometry(0.016, 10, 8), P('#111', 0.05), V(x, 0.04, 0.135), bearHead)); })();
   swapModel('teddy', bear).then(ok => { if (ok) bear.position.y = 0.58; });
-  spots.bearEar = () => ({ p: V(-0.13, hasModel('teddy') ? 0.55 : 0.6, -0.04), parent: bear, rot: [0, Math.PI, 0], scale: 0.8 });
+  // GLBのくまは顔が +X を向いているので、耳は Z の左右にある。手前（入口側）の耳の上に乗せる。まわりの小物は宙に浮くので置かない
+  spots.bearEar = () => ({ p: hasModel('teddy') ? V(-0.015, 0.608, 0.125) : V(-0.13, 0.6, -0.04), parent: bear, rot: [0, Math.PI, 0], scale: 0.8, noCamo: true });
   spots.behindBear = () => ({ p: V(0.05, 1.22, -0.36), parent: chair, rot: [0, 0, 0] });
   let bearYaw = 0, lookAways = 0, wasWatched = true;
   // 蓄音機（ラッパの奥に指輪）
@@ -518,7 +519,7 @@ export function createAttic(game) {
       if (hasModel(key)) swapModel(key, o);
       return o;
     };
-    const targets = page.targets.map(([key, where, lens]) => { const o = place(key, spots[where](), null, true); camouflage(o); if (!hasModel(key)) mergeStatic(o, { raycast: true }); if (lens) o.userData.lensOnly = true; pageObjs.push(o); if (o.userData.string) pageObjs.push(o.userData.string); return { id: key, name: TOY_MAP[key].name, obj: o }; });
+    const targets = page.targets.map(([key, where, lens]) => { const spot = spots[where](), o = place(key, spot, null, true); if (!spot.noCamo) camouflage(o); if (!hasModel(key)) mergeStatic(o, { raycast: true }); if (lens) o.userData.lensOnly = true; pageObjs.push(o); if (o.userData.string) pageObjs.push(o.userData.string); return { id: key, name: TOY_MAP[key].name, obj: o }; });
     const sObj = place(page.secret[0], spots[page.secret[1]](), null, true); if (!hasModel(page.secret[0])) mergeStatic(sObj, { raycast: true }); if (page.secret[2] === 'lens') sObj.userData.lensOnly = true; pageObjs.push(sObj);
     if (page.secret[0] === 'owl') { sObj.visible = false; lookAways = 0; }   // 3回振り返ると出てくる
     const secret = { id: page.secret[0], name: TOY_MAP[page.secret[0]].name, obj: sObj };
